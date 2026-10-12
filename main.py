@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import sys
 
 from autodub.config import DEFAULT_STT, DEFAULT_TRANSLATE, DEFAULT_TTS, build_config
@@ -118,8 +119,19 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _terminate(signum, _frame):
+    # Raise in the main thread so `finally` blocks run and temp files are removed.
+    raise SystemExit(128 + signum)
+
+
 if __name__ == "__main__":
-    code = main()
+    signal.signal(signal.SIGTERM, _terminate)
+    try:
+        code = main()
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 1
+        if code >= 128:
+            print("[autodub] stopped", file=sys.stderr)
     # Exit without running native library teardown. onnxruntime (piper) keeps a
     # telemetry thread alive that races torch's static destructors (pulled in by
     # argostranslate/stanza) at interpreter exit, segfaulting (exit 139) *after*

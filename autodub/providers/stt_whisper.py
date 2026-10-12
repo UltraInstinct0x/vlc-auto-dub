@@ -13,6 +13,7 @@ last.
 from __future__ import annotations
 
 from ..errors import DependencyError, ProviderError
+from ..progress import progress
 from .base import Segment
 
 DEFAULT_MODEL = "large-v3"
@@ -96,7 +97,13 @@ class WhisperSTT:
                 condition_on_previous_text=False,
             )
             words: list[tuple[float, float, str]] = []
+            total = max(len(samples) / 16000, 1e-6)
+            reported = 0
             for seg in seg_iter:
+                pct = int(min(seg.end / total, 1.0) * 100)
+                if pct >= reported + 5:
+                    reported = pct - pct % 5
+                    progress(f"transcribing {reported}%")
                 for w in seg.words or []:
                     if w.word.strip():
                         words.append((float(w.start), float(w.end), w.word))

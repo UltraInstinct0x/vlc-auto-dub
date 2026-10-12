@@ -128,32 +128,80 @@ local function close_dialog()
     end
 end
 
+local function job_for(video, uri, in_place)
+    local base = strip_extension(video)
+    return {
+        video = video, uri = uri, in_place = in_place,
+        log = base .. ".autodub.log", pidfile = base .. ".autodub.pid",
+    }
+end
+
+local function shell_ok(cmd)
+    local r = os.execute(cmd)
+    return r == 0 or r == true  -- Lua 5.1 returns 0, Lua 5.2+ returns true
+end
+
+-- PID of the running job for this video, or nil if none is running.
+local function running_pid(j)
+    local text = read_file(j.pidfile)
+    local pid = text and text:match("(%d+)")
+    if pid and shell_ok("kill -0 " .. pid .. " 2>/dev/null") then
+        return pid
+    end
+    return nil
+end
+
+local function last_line(text)
+    local last = ""
+    for line in text:gmatch("[^\n]+") do
+        last = line
+    end
+    return last
+end
+
 local function show_status_dialog(message)
     close_dialog()
     dlg = vlc.dialog("Auto-Dub")
-    local status = dlg:add_label(message, 1, 1, 3, 1)
+    local status = dlg:add_label(message, 1, 1, 4, 1)
+    local stop_presses = 0
 
     dlg:add_button("Check status", function()
         local text = read_file(job.log) or ""
         local code = text:match("AUTODUB_EXIT=(%d+)")
-        if not code then
-            local last = ""
-            for line in text:gmatch("[^\n]+") do
-                last = line
-            end
-            status:set_text("Working... " .. last)
-        elseif code == "0" then
+        if code == "0" then
             if job.in_place then
                 status:set_text("Done. Click 'Reopen video' to load the new tracks.")
             else
                 status:set_text("Done. Output written next to the video.")
             end
-        else
+        elseif code == "143" or code == "137" then
+            status:set_text("Stopped. The original file was not changed.")
+        elseif code then
             local err = text:match("error: ([^\n]+)") or ("exit code " .. code)
             status:set_text("Failed: " .. err .. " (log: " .. job.log .. ")")
+        elseif running_pid(job) then
+            status:set_text("Working... " .. last_line(text))
+        else
+            status:set_text("Not running. Log: " .. job.log)
         end
         dlg:update()
     end, 1, 2, 1, 1)
+
+    dlg:add_button("Stop job", function()
+        local pid = running_pid(job)
+        if not pid then
+            status:set_text("No job is running for this video.")
+        elseif stop_presses == 0 then
+            -- SIGTERM: the CLI stops at the next safe point and removes temp files.
+            os.execute("kill -TERM " .. pid)
+            stop_presses = 1
+            status:set_text("Stopping... (press again to force)")
+        else
+            os.execute("kill -KILL " .. pid)
+            status:set_text("Killed. The original file was not changed.")
+        end
+        dlg:update()
+    end, 2, 2, 1, 1)
 
     dlg:add_button("Reopen video", function()
         -- Reload the (rewritten) file at the current position so VLC sees the
@@ -171,25 +219,32 @@ local function show_status_dialog(message)
             vlc.playlist.delete(current)
         end
         close_dialog()
-    end, 2, 2, 1, 1)
+    end, 3, 2, 1, 1)
 
-    dlg:add_button("Close", close_dialog, 3, 2, 1, 1)
+    dlg:add_button("Close", close_dialog, 4, 2, 1, 1)
     dlg:show()
 end
 
 local function start_job(video, uri, python, script, source, target, mode, in_place, sound_tags)
-    local log = strip_extension(video) .. ".autodub.log"
+    local j = job_for(video, uri, in_place)
+    if running_pid(j) then
+        job = j
+        show_status_dialog("A job is already running for this video.")
+        return
+    end
     local parts = { shquote(python), shquote(script) }
     for _, arg in ipairs(build_args(video, source, target, mode, in_place, sound_tags)) do
         table.insert(parts, shquote(arg))
     end
-    -- Run in the background so VLC's UI thread is not blocked; the exit code is
-    -- appended to the log so the status button can tell success from failure.
-    local cmd = "( " .. table.concat(parts, " ") .. "; echo \"AUTODUB_EXIT=$?\" ) > "
-        .. shquote(log) .. " 2>&1 &"
+    -- Run in the background so VLC's UI thread is not blocked. The PID is kept
+    -- in a file so the job can be found and stopped even after VLC restarts;
+    -- the exit code is appended to the log for the status button.
+    local cmd = "( " .. table.concat(parts, " ") .. " & echo $! > " .. shquote(j.pidfile)
+        .. "; wait $!; code=$?; rm -f " .. shquote(j.pidfile)
+        .. "; echo \"AUTODUB_EXIT=$code\" ) > " .. shquote(j.log) .. " 2>&1 &"
     vlc.msg.info("vlc-auto-dub: " .. cmd)
     os.execute(cmd)
-    job = { video = video, uri = uri, log = log, in_place = in_place }
+    job = j
     show_status_dialog("Started. This can take a while; you can keep watching.")
 end
 
@@ -259,6 +314,12 @@ function activate()
         return
     end
 
+    local j = job_for(video, uri, true)
+    if running_pid(j) then
+        job = j
+        show_status_dialog("A job is running for this video.")
+        return
+    end
     show_settings_dialog(video, uri, python, script)
 end
 

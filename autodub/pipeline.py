@@ -14,6 +14,7 @@ import tempfile
 
 from . import media
 from .config import Config
+from .progress import progress
 from .errors import AutoDubError, InputError, MediaError, ProviderError
 from .languages import normalize_code, primary_subtag, track_language
 from .providers import make_stt, make_translator, make_tts
@@ -48,6 +49,7 @@ def _replace_in_place(input_path: str, audio: str | None, srt: str | None, langu
     """
     folder, name = os.path.split(os.path.abspath(input_path))
     stem, ext = os.path.splitext(name)
+    progress("writing tracks into the file")
     fd, tmp = tempfile.mkstemp(prefix=f".{stem}.autodub-", suffix=ext, dir=folder)
     os.close(fd)
     try:
@@ -161,9 +163,12 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
 
     try:
         audio = os.path.join(workdir, "audio.wav")
+        progress("extracting audio")
         media.extract_audio(input_path, audio, audio_index=audio_index)
         source_dur = media.duration(audio)
 
+        progress(f"transcribing ({config.stt}"
+                 + (f", {config.whisper_model}" if config.whisper_model else "") + ")")
         raw_segments = stt.transcribe(audio, source_code or None)
         if not source_code and target_code:
             # Source left on auto: translate from whatever the STT detected.
@@ -180,6 +185,7 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
 
         texts = [seg.text for seg in raw_segments]
         if do_translate and translator is not None:
+            progress(f"translating {len(texts)} lines {source_code}->{target_code}")
             if hasattr(translator, "translate_batch"):
                 translated = translator.translate_batch(texts, source_code, target_code)
             else:
@@ -209,6 +215,7 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
         if config.sound_tags and not config.dub_only:
             from .sound_events import SoundTagger
 
+            progress("detecting sound tags")
             tags = SoundTagger().tag(media.read_samples(audio), list(raw_segments),
                                      target_code or source_code or None)
             summary["sound_tags"] = len(tags)
@@ -241,6 +248,8 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
                 media.slice_audio(audio, cursor, start - cursor, non)
                 parts.append(non)
             raw = os.path.join(workdir, f"seg_{i}.wav")
+            if i % 10 == 0:
+                progress(f"dubbing line {i + 1}/{len(segments)}")
             tts.synthesize(text, raw, voice)
             fitted = os.path.join(workdir, f"fit_{i}.wav")
             media.fit_segment(raw, end - start, fitted)
