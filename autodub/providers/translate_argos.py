@@ -1,8 +1,11 @@
 """Real offline translation via argostranslate (CPU, no API key).
 
 The required language package is installed on demand from the Argos package
-index. If it cannot be fetched, a clear DependencyError/ProviderError is
-raised -- no translation result is ever fabricated.
+index. Correctness note: ``argostranslate.translate.get_installed_languages`` is
+``lru_cache``d, so a package installed during a run is invisible to argos's own
+``translate()`` until the cache is cleared. We clear it after any install and
+then *verify* the pair actually resolves; if it does not, we raise -- we never
+let argos silently return the source text.
 """
 from __future__ import annotations
 
@@ -27,16 +30,28 @@ class ArgosTranslator:
             self._module = (pkg, tr)
         return self._module
 
-    def _ensure_pair(self, source: str, target: str) -> None:
-        if (source, target) in self._ready:
-            return
-        pkg, tr = self._load()
-        install_hint = (
+    @staticmethod
+    def _install_hint(source: str, target: str) -> str:
+        return (
             f"argospm install translate-{source}_{target}  "
             f"(package: translate-{source}_{target})"
         )
 
+    @staticmethod
+    def _cache_clear() -> None:
         from argostranslate.translate import get_installed_languages
+
+        try:
+            get_installed_languages.cache_clear()
+        except AttributeError:  # pragma: no cover - not cached in some versions
+            pass
+
+    def _pair_resolves(self, source: str, target: str) -> bool:
+        """True only if argos can resolve source->target with the current cache."""
+        from argostranslate.translate import (
+            get_installed_languages,
+            get_translation_from_codes,
+        )
 
         try:
             installed = get_installed_languages()
@@ -46,26 +61,45 @@ class ArgosTranslator:
             if lang.code != source:
                 continue
             if any(t.to_lang.code == target for t in lang.translations_from):
-                self._ready.add((source, target))
-                return
+                try:
+                    get_translation_from_codes(source, target)
+                    return True
+                except Exception:
+                    return False
+        return False
+
+    def _ensure_pair(self, source: str, target: str) -> None:
+        if (source, target) in self._ready:
+            return
+        pkg, _tr = self._load()
+        install_hint = self._install_hint(source, target)
+
+        if self._pair_resolves(source, target):
+            self._ready.add((source, target))
+            return
+
+        # Not installed yet: fetch it, then clear the lru_cache so argos sees the
+        # newly installed package, and re-verify.
         try:
             pkg.update_package_index()
             for p in pkg.get_available_packages():
                 if p.from_code == source and p.to_code == target:
                     pkg.install_from_path(p.download())
-                    self._ready.add((source, target))
-                    return
+                    break
         except Exception as exc:  # noqa: BLE001
             raise ProviderError(
                 f"argos has no installed translation for {source!r}->{target!r} and it "
                 f"could not be downloaded ({exc}). Install it once with network access: "
                 f"{install_hint}"
             ) from exc
-        raise ProviderError(
-            f"argos has no offline translation package for {source!r}->{target!r}; "
-            f"not every pair exists (try a pivot language such as English). "
-            f"To check/install: {install_hint}"
-        )
+
+        self._cache_clear()
+        if not self._pair_resolves(source, target):
+            raise ProviderError(
+                f"argos has no usable translation for {source!r}->{target!r} after install "
+                f"attempt; not every pair exists. Install/verify with: {install_hint}"
+            )
+        self._ready.add((source, target))
 
     def translate(self, text: str, source: str, target: str) -> str:
         if source == target:
@@ -75,4 +109,7 @@ class ArgosTranslator:
         try:
             return tr.translate(text, source, target)
         except Exception as exc:  # noqa: BLE001
-            raise ProviderError(f"argos translation failed: {exc}") from exc
+            raise ProviderError(
+                f"argos translation {source!r}->{target!r} failed: {exc}; verify the pack: "
+                f"{self._install_hint(source, target)}"
+            ) from exc

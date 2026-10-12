@@ -14,7 +14,7 @@ import tempfile
 
 from . import media
 from .config import Config
-from .errors import AutoDubError, InputError, MediaError
+from .errors import AutoDubError, InputError, MediaError, ProviderError
 from .languages import normalize_code, primary_subtag
 from .providers import make_stt, make_translator, make_tts
 from .subtitles import Cue, write_srt
@@ -100,11 +100,27 @@ def run(input_path: str, output_base: str, config: Config) -> dict:
         raw_segments = stt.transcribe(audio, source_code or None)
 
         segments = []
+        unchanged = 0
         for seg in raw_segments:
             text = seg.text
             if do_translate and translator is not None:
-                text = translator.translate(text, source_code, target_code)
+                translated = translator.translate(text, source_code, target_code)
+                if translated.strip() == text.strip():
+                    unchanged += 1
+                text = translated
             segments.append((seg.start, seg.end, text))
+
+        # Guard against the dangerous silent failure: a "translation" step that
+        # returns the source text verbatim for every segment means the pack is
+        # not actually loaded, and the dub would be source-language audio.
+        if do_translate and segments and unchanged == len(segments):
+            raise ProviderError(
+                f"translation {source_code!r}->{target_code!r} returned the source text "
+                f"unchanged for every segment; refusing to label source-language audio as "
+                f"translated. Install/verify the pack: "
+                f"argospm install translate-{source_code}_{target_code}"
+            )
+
         summary["translated"] = do_translate and bool(segments)
         summary["segment_count"] = len(segments)
 
