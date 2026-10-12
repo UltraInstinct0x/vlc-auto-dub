@@ -1,44 +1,114 @@
 """Language generality: arbitrary ISO-ish codes, on-demand packs, clear errors.
 
-- real argos packs must work for a NON en->tr pair (en->de) and for en->tr;
-- an unsupported pair must raise a clear, actionable error (never produce
-  source-language audio labelled as the target);
-- TTS voice selection must follow the target language with a documented
-  fallback.
+The real-argos tests establish their own precondition: they install/verify the
+required pack and **fail loudly** (never skip) if it cannot be made available.
 """
 from __future__ import annotations
 
-import importlib.util
+import os
 
 import pytest
 
-from autodub.errors import ProviderError
-from autodub.voices import (
-    DEFAULT_PIPER_VOICE,
-    effective_voice,
-)
+from autodub.errors import DependencyError, ProviderError
+from autodub.voices import DEFAULT_PIPER_VOICE, effective_voice
 from autodub.config import build_config
 from autodub.pipeline import run
 
-_HAS_ARGOS = importlib.util.find_spec("argostranslate") is not None
+
+def _require_argos():
+    try:
+        import argostranslate  # noqa: F401
+    except ImportError as exc:  # pragma: no cover
+        pytest.fail(f"argostranslate is required for these tests: {exc}")
 
 
-@pytest.mark.skipif(not _HAS_ARGOS, reason="argostranslate not installed")
+def ensure_argos_pair(source: str, target: str) -> None:
+    """Guarantee the argos pack for ``source->target`` is installed and resolves.
+
+    Fails the test with a clear, actionable message if it cannot be installed;
+    never silently skips or passes.
+    """
+    _require_argos()
+    import argostranslate.package as pkg
+    from argostranslate.translate import (
+        get_installed_languages,
+        get_translation_from_codes,
+    )
+
+    def resolves() -> bool:
+        get_installed_languages.cache_clear()
+        try:
+            get_translation_from_codes(source, target)
+            return True
+        except Exception:
+            return False
+
+    if resolves():
+        return
+
+    try:
+        pkg.update_package_index()
+        available = [
+            p for p in pkg.get_available_packages()
+            if p.from_code == source and p.to_code == target
+        ]
+    except Exception as exc:
+        pytest.fail(
+            f"cannot reach the argos package index to install "
+            f"translate-{source}_{target}: {exc}. Install manually: "
+            f"argospm install translate-{source}_{target}"
+        )
+    if not available:
+        pytest.fail(
+            f"argos pack translate-{source}_{target} is not in the index. "
+            f"Install manually: argospm install translate-{source}_{target}"
+        )
+    pkg.install_from_path(available[0].download())
+    if not resolves():
+        pytest.fail(
+            f"installed translate-{source}_{target} but it still does not resolve; "
+            f"the install may be corrupt."
+        )
+
+
 @pytest.mark.parametrize("source,target,text", [
     ("en", "de", "Good morning, the meeting starts at nine."),
     ("en", "tr", "Good morning, the meeting starts at nine."),
     ("de", "en", "Guten Morgen, das Meeting beginnt um neun Uhr."),
 ])
 def test_real_argos_pairs(source, target, text):
+    ensure_argos_pair(source, target)
     from autodub.providers.translate_argos import ArgosTranslator
 
     out = ArgosTranslator().translate(text, source, target)
-    assert out and out.lower() != text.lower(), f"no {source}->{target} translation produced"
+    assert out and out.strip().lower() != text.strip().lower(), (
+        f"argos returned the {source}->{target} source text unchanged"
+    )
     assert isinstance(out, str)
 
 
-@pytest.mark.skipif(not _HAS_ARGOS, reason="argostranslate not installed")
+def test_noop_translation_is_rejected(tone_video, tmp_path, monkeypatch):
+    """A translation that returns the source text verbatim must fail loudly."""
+    import autodub.pipeline as pipeline
+
+    class IdentityTranslator:
+        def translate(self, text, source, target):
+            return text  # the dangerous silent no-op
+
+    monkeypatch.setattr(pipeline, "make_translator", lambda name: IdentityTranslator())
+    base = tmp_path / "out"
+    with pytest.raises(ProviderError) as exc:
+        run(tone_video, str(base), build_config(
+            stt="fake", tts="fake", source_lang="en", target_lang="de"))
+    msg = str(exc.value)
+    assert "'en'" in msg and "'de'" in msg and "argospm" in msg
+    # and nothing was written that could be mistaken for a target-language dub
+    assert not (tmp_path / "out.srt").exists()
+    assert not (tmp_path / "out_dubbed.mp4").exists()
+
+
 def test_unsupported_pair_raises_actionable_error(monkeypatch):
+    _require_argos()
     import argostranslate.package as pkg
     from autodub.providers.translate_argos import ArgosTranslator
 
@@ -55,7 +125,6 @@ def test_unsupported_pair_raises_actionable_error(monkeypatch):
 
 def test_unsupported_pair_does_not_emit_target_audio(tone_video, tmp_path, monkeypatch):
     """A failing translation aborts the run and leaves no output to mistake for a dub."""
-    from autodub.providers import translate_fake
     import autodub.pipeline as pipeline
 
     class BoomTranslator:
@@ -67,18 +136,14 @@ def test_unsupported_pair_does_not_emit_target_audio(tone_video, tmp_path, monke
     with pytest.raises(ProviderError):
         run(tone_video, str(base), build_config(
             stt="fake", tts="fake", source_lang="en", target_lang="zz"))
-    # nothing that could be mistaken for a finished target-language dub
     assert not (tmp_path / "out_dubbed.mp4").exists()
     assert not (tmp_path / "out.srt").exists()
 
 
 def test_voice_follows_target_language():
-    # espeak uses the language code directly
     assert effective_voice("espeak", "de") == ("de", None)
-    # piper maps to a real voice
     assert effective_voice("piper", "de") == ("de_DE-thorsten-medium", None)
     assert effective_voice("piper", "tr") == ("tr_TR-dfki-medium", None)
-    # documented fallback for an unmapped language
     voice, warning = effective_voice("piper", "xx")
     assert voice == DEFAULT_PIPER_VOICE
     assert warning and "xx" in warning
@@ -87,7 +152,6 @@ def test_voice_follows_target_language():
 def test_http_backend_is_off_by_default(monkeypatch):
     """The external backend must refuse unless explicitly configured."""
     from autodub.providers.translate_http import HttpTranslator
-    from autodub.errors import DependencyError
 
     monkeypatch.delenv("AUTODUB_TRANSLATE_URL", raising=False)
     monkeypatch.delenv("AUTODUB_TRANSLATE_KEY", raising=False)
