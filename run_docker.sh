@@ -28,4 +28,4 @@ docker run --rm \
     vlc-extension \
     python main.py \
         "/input/$(basename "$VIDEO_PATH")" \
-        "/output/$(basename "$OUTPUT_PATH")"
+        --output-base "/output/$(basename "$OUTPUT_PATH")"

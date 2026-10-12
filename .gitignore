@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Pipeline outputs / intermediates
+*.work/
+*.autodub.log
+*_dubbed.mp4
+*_dubbed.mkv
+*.srt
+
+# Test fixtures built by scripts/make_fixture.sh
+fixture.mp4

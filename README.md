@@ -1,184 +1,174 @@
-# VLC AI Auto-Dubbing Extension 🎙️🔄
+# vlc-auto-dub
 
-> Transcribe a video's audio and generate a dubbed track with faster-whisper and local speech synthesis
+> Dub a video's speech into subtitles and an alternate audio track, locally.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## 🎯 What it does
+Dubs a video file end to end: extract audio → transcribe (STT) → **optional
+translate** → synthesize speech (TTS) → fit each clip to its time slot →
+assemble → mux a new audio track. The original media is never modified.
 
-Process a video's audio with local transcription and speech synthesis:
-- Automatic speech recognition (transcription) with faster-whisper
-- Speech synthesis for the transcribed text with pyttsx3
-- Volume lowering and mixing of the dubbed audio
-- A Docker image that bundles ffmpeg, faster-whisper and pyttsx3
-- An included VLC Lua extension (see limitations below)
+Everything runs locally. No media is uploaded anywhere by the default
+providers, and no API key is required.
 
-## Key features
+## What it does
 
-- **Containerized pipeline**: the Docker image bundles all processing tools.
-- **Local processing**: no media leaves your machine for the Docker pipeline.
-- **Subtitle output**: writes an SRT file next to the dubbed video.
+- **Transcription** with [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper)
+  (local, CPU, `tiny` model by default — see *Models and downloads*).
+- **Optional translation** so the dub and subtitles can target a different
+  language, using [`argostranslate`](https://github.com/argosopentech/argos-translate)
+  (local, offline) by default.
+- **Speech synthesis** with [`piper`](https://github.com/rhasspy/piper)
+  (local, CPU) or `espeak-ng` (small, no model download).
+- **Time-aligned output**: each synthesized clip is fitted into its segment's
+  `[start, end]` window, and non-speech audio is preserved from the source.
+- **Subtitles**: writes an UTF-8 `.srt` next to the dubbed video.
 
-## Overview
+## Requirements
 
-This project provides a Docker-based tool that creates a dubbed audio track from a video. The process:
+- **ffmpeg / ffprobe** on `PATH` (`sudo apt-get install ffmpeg`).
+- **Python 3.10+** (verified on 3.14).
+- Python packages: `pip install -r requirements.txt`.
+- Optional: **`espeak-ng`** for the lightweight TTS backend
+  (`sudo apt-get install espeak-ng`).
 
-1. Extract the audio track from the video.
-2. Transcribe speech with faster-whisper.
-3. Lower the original voice in each spoken segment.
-4. Synthesize speech for the transcribed text with pyttsx3.
-5. Mix the synthesized speech over the lowered segment.
-6. Concatenate the processed segments and the non-speech audio.
-7. Write the dubbed audio, the subtitle file, and the final video.
-
-> **Note**: The Docker image installs its dependencies (ffmpeg, espeak, faster-whisper, pyttsx3), so the Python packages are not needed on the host for the Docker path.
-
-## Quick Start
+## Usage
 
 ```bash
-# Clone the repository
-git clone https://github.com/UltraInstinct0x/vlc-auto-dub.git
-cd vlc-auto-dub
-
-# Make the script executable
-chmod +x run_docker.sh
-
-# Build the image and run the pipeline
-./run_docker.sh /path/to/video.mp4 /path/to/output
+python main.py INPUT --output-base BASE [options]
 ```
 
-The second argument is an output path base. The pipeline writes `<base>_dubbed.wav`, `<base>.srt`, and `<base>_dubbed<ext>` beside it.
+Writes `<BASE>_dubbed<ext>` (dubbed video) and `<BASE>.srt` (subtitles).
 
-## Project Structure
-
-### Core Components
-
-| File | Description |
-|------|-------------|
-| `main.py` | Core processing logic for audio extraction, transcription, and processing |
-| `run_entrypoint.sh` | Docker container entrypoint script |
-| `Dockerfile` | Container definition with all dependencies |
-| `run_docker.sh` | Helper script for Docker operations |
-| `transcribe.vlc.lua` | VLC extension for user interaction |
-
-## Setup Guide
-
-### Prerequisites
-
-- **Docker Desktop**: [Download here](https://www.docker.com/products/docker-desktop)
-- **VLC Media Player**: [Download here](https://www.videolan.org/vlc/)
-
-### Installation Steps
-
-1. **Docker Setup**
-   ```bash
-   # Verify Docker installation
-   docker --version
-   ```
-
-2. **VLC Extension Installation**
-   ```bash
-   # macOS
-   cp transcribe.vlc.lua ~/Library/Application\ Support/org.videolan.vlc/lua/extensions/
-   ```
-
-### Usage Instructions
-
-#### Docker Method
 ```bash
-./run_docker.sh <input_video> <output_base>
+# Dub an English video into Turkish (transcription + translation + TTS)
+python main.py movie.mp4 --output-base movie_tr \
+    --source-lang en --target-lang tr
+
+# Same language, just re-voice + subtitles
+python main.py clip.mp4 --output-base clip --source-lang en --tts espeak
+
+# Subtitles only (no TTS, no muxing)
+python main.py talk.mp4 --output-base talk --subtitle-only
+
+# Choose providers / voice explicitly
+python main.py v.mp4 --output-base v --stt whisper --translate argos \
+    --tts piper --voice en_US-lessac-medium
 ```
 
-Example:
+### Options
+
+| Option | Description | Default |
+|---|---|---|
+| `INPUT` | input video file (never modified) | required |
+| `--output-base BASE` | writes `BASE_dubbed<ext>` and `BASE.srt` | required |
+| `--source-lang` | source language code, e.g. `en` | STT auto-detect |
+| `--target-lang` | target language; when it differs from the source, translate | off |
+| `--stt` | STT provider: `whisper`, `fake` | `whisper` |
+| `--translate` | translation provider: `argos`, `http`, `fake` | `argos` |
+| `--tts` | TTS provider: `piper`, `espeak`, `fake` | `piper` |
+| `--voice` | provider-specific voice name | provider default |
+| `--subtitle-only` | write only the SRT | off |
+| `--keep-workdir` | keep intermediates at `BASE.work` | off |
+| `--config FILE` | config file (`key = value` or JSON) | none |
+
+Config-file keys mirror the flags (`stt`, `translate`, `tts`, `voice`); the
+environment variables `AUTODUB_STT`, `AUTODUB_TRANSLATE`, `AUTODUB_TTS`,
+`AUTODUB_VOICE` are also read (CLI flags win).
+
+### Models and downloads
+
+- **STT**: the `tiny` model (~75 MB) is downloaded by faster-whisper on first
+  run into the Hugging Face cache. Select another size by editing
+  `WhisperSTT(model_size=...)` or `faster_whisper`'s cache.
+- **TTS (piper)**: a voice model (~60 MB) is downloaded on first use into
+  `~/.cache/vlc-auto-dub/piper`. Override the directory with
+  `AUTODUB_PIPER_DIR`.
+- **Translation (argos)**: the language package is downloaded on first use of a
+  given pair.
+
+## Providers
+
+| Kind | Name | Backend | Network | Status |
+|---|---|---|---|---|
+| STT | `whisper` | faster-whisper (local) | model download only | verified |
+| STT | `fake` | deterministic test double | none | test-only |
+| translate | `argos` | argostranslate (local, offline) | package download on first pair | verified |
+| translate | `http` | LibreTranslate-compatible HTTP | yes | **code-only, untested** |
+| translate | `fake` | deterministic test double | none | test-only |
+| TTS | `piper` | piper-tts (local) | model download on first voice | verified |
+| TTS | `espeak` | espeak-ng (local) | none | verified |
+| TTS | `fake` | deterministic test double | none | test-only |
+
+The `http` translation backend is **not** enabled by default, ships **untested**,
+and requires `AUTODUB_TRANSLATE_URL` (optionally `AUTODUB_TRANSLATE_KEY`). Do not
+point it at a public endpoint with private media — only text spans you may share
+are sent.
+
+## VLC integration
+
+`transcribe.vlc.lua` adds an **Auto-Dub** menu item that runs the CLI on the
+currently playing file and writes `<base>.srt` / `<base>_dubbed<ext>`.
+
+It has **no hardcoded path**. Configure once in
+`~/.config/vlc-auto-dub/config.lua`:
+
+```lua
+return {
+  python = "/usr/bin/python3",
+  script = "/absolute/path/to/vlc-auto-dub/main.py",
+}
+```
+
+(or set `VLC_AUTODUB_PYTHON` / `VLC_AUTODUB_SCRIPT`). Copy the file to your VLC
+extensions directory, e.g. on Linux
+`~/.local/share/vlc/lua/extensions/`, on macOS
+`~/Library/Application\ Support/org.videolan.vlc/lua/extensions/`.
+
+The extension's argument contract (verified by tests, not inside VLC):
+`"<python>" "<script>" "<video>" --output-base "<base>" --target-lang "<lang>"`.
+It runs the job in the background so VLC's UI thread is not blocked, and logs to
+`<base>.autodub.log`. The VLC runtime itself was **not** exercised in CI/here
+(no VLC Lua host); the extension is *invocation-verified* and *syntax-checked*,
+not *VLC-verified*.
+
+## Testing
+
 ```bash
-./run_docker.sh ~/Videos/movie.mp4 ~/Music/dubbed_movie
+pip install -r requirements.txt pytest
+python -m pytest -v
 ```
 
-#### VLC Integration
+- Unit tests use deterministic provider fakes (no model, no network).
+- The end-to-end test runs the **real** ffmpeg pipeline on a synthesized fixture
+  and asserts: both streams present (ffprobe), subtitles monotonic and
+  non-overlapping, assembled duration within tolerance, and the **input hash
+  unchanged**.
+- `tests/test_real_backends.py` runs real `faster-whisper` + `espeak-ng`+ real
+  `argostranslate` (skipped if a backend is absent). It asserts that a real
+  model produced real segments and a real engine produced real audio; it does
+  **not** assert recognition/translation *quality*.
 
-1. Open VLC
-2. Navigate to `View → Extensions`
-3. Select the dubbing extension
-4. Follow the on-screen prompts
+Generate the synthesized fixture yourself:
 
-## Advanced Configuration
+```bash
+scripts/make_fixture.sh fixture.mp4 4
+```
 
-### Customization Options
+## Limitations
 
-Edit `main.py` to adjust:
-- Volume levels
-- TTS voice settings
-- Transcription parameters
-- Audio processing options
-
-### Development Notes
-
-For local development:
-1. Create a virtual environment
-2. Install requirements
-3. Run `main.py` directly
-
-## Troubleshooting
-
-Common issues and solutions:
-
-- **Permission Denied**: Run `chmod +x run_docker.sh`
-- **Docker Not Running**: Start Docker Desktop
-- **Missing Output**: Ensure write permissions in output directory
-
-## Implemented in repository
-
-- Audio extraction, transcription with faster-whisper, per-segment volume lowering, pyttsx3 speech synthesis, audio mixing and concatenation, and SRT generation, all in `main.py`.
-- A Docker image that installs ffmpeg, espeak, faster-whisper and pyttsx3.
-- A VLC Lua extension that shows a language prompt and launches the pipeline.
-
-## Limitations and unverified behavior
-
-- **No translation.** The pipeline does not translate speech between languages, and there is no translation library or service anywhere in the code. Speech synthesis uses the transcribed text as-is, so the dub stays in the source language.
-- **The VLC extension does not work as shipped.** In `transcribe.vlc.lua`, the launch command hardcodes the placeholder path `/path/to/main.py` and calls the host `python3` directly rather than the Docker script.
-- **The extension's arguments do not match the pipeline.** It passes the entered language as the second argument, but `main.py` treats its second argument as an output path base, so the language never reaches any step.
-- **Subtitle filename mismatch.** The extension looks for `<name>_transcription.srt`, while `main.py` writes `<base>.srt`.
-- **Runtime status is not verified here.** The repository includes no test suite, and the pipeline has not been executed as part of documenting it.
-
-## Roadmap (proposals, not commitments)
-
-These are ideas, not implemented features:
-
-- Add real translation so dubbing can target a language different from the source.
-- Parameterize the extension launch path and align its arguments with the pipeline.
-- Add a test suite.
-
-## Contributing
-
-Contributions welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Submit a pull request
+- **Quality is not guaranteed.** The pipeline is mechanically correct (timing,
+  muxing, subtitles) but transcription, translation and speech quality depend on
+  the models; a `tiny` STT model and offline translation are deliberately small
+  and will make mistakes.
+- **Single speaker assumed.** No diarization or per-speaker voice mapping.
+- **Translation** only covers language pairs argostranslate ships; the `http`
+  backend is untested.
+- **Piper** speaks the voice you pick; matching the source speaker's voice is out
+  of scope.
+- **The Docker path** (`Dockerfile`, `run_docker.sh`) is legacy and was **not**
+  rebuilt or run for this change.
 
 ## License
 
-MIT License
-
-Copyright (c) 2024 VLC Video Dubbing Extension
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
----
-
-For more information or support, please [open an issue](https://github.com/ultrainstinct0x/vlc-extension/issues).
+MIT — see [LICENSE](LICENSE). Copyright (c) 2024 VLC Video Dubbing Extension.
