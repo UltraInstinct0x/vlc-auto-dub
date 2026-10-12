@@ -10,5 +10,8 @@ argostranslate>=1.11
 # TTS (local, CPU) -- default provider "piper"
 piper-tts>=1.8
 
+# CA bundle for model downloads on Pythons without one (python.org macOS builds)
+certifi
+
 # Test runner
 pytest>=8

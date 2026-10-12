@@ -1,7 +1,10 @@
 -- transcribe.vlc.lua -- VLC extension for vlc-auto-dub
 --
--- Adds a menu item that dubs the currently playing video with the local
--- vlc-auto-dub CLI and writes "<base>.srt" and "<base>_dubbed<ext>" beside it.
+-- Adds "Auto-Dub" to VLC's Extensions menu. It dubs and/or subtitles the
+-- currently playing video with the local vlc-auto-dub CLI. By default the new
+-- tracks are added inside the video file itself (every original track is
+-- kept); untick "Add tracks into this file" to write "<base>_dubbed<ext>" and
+-- "<base>.srt" beside it instead.
 --
 -- Paths are configurable; there is NO hardcoded placeholder path here.
 -- Configure once in ~/.config/vlc-auto-dub/config.lua:
@@ -17,14 +20,34 @@
 function descriptor()
     return {
         title = "Auto-Dub (vlc-auto-dub)",
-        version = "2.0",
+        version = "3.0",
         author = "vlc-auto-dub",
-        shortdesc = "Transcribe and dub the current video",
-        capabilities = { "input-listener", "menu" }
+        shortdesc = "Dub and/or subtitle the current video",
+        capabilities = { "menu" }
     }
 end
 
+-- Languages offered in the dialog: { code, label }.
+local LANGUAGES = {
+    { "en", "English" }, { "tr", "Turkish" }, { "de", "German" },
+    { "fr", "French" }, { "es", "Spanish" }, { "it", "Italian" },
+    { "pt", "Portuguese" }, { "ru", "Russian" }, { "nl", "Dutch" },
+    { "pl", "Polish" }, { "ar", "Arabic" }, { "ja", "Japanese" },
+    { "ko", "Korean" }, { "zh", "Chinese" }, { "hi", "Hindi" },
+    { "uk", "Ukrainian" },
+}
+
+local MODES = {
+    { "both", "Dub + subtitles" },
+    { "dub", "Dub only" },
+    { "subs", "Subtitles only" },
+}
+
+-- Formats --in-place can rewrite (must match autodub/media.py).
+local IN_PLACE_EXTENSIONS = { mp4 = true, m4v = true, mov = true, mkv = true }
+
 local dlg = nil
+local job = nil  -- { video, uri, log, in_place } of the last started run
 
 -- POSIX single-quote shell escaping: safe for spaces, quotes and $ in paths.
 local function shquote(value)
@@ -45,29 +68,180 @@ local function strip_extension(path)
     return (path:gsub("%.[^%./]+$", ""))
 end
 
-local function current_video_path()
+local function extension_of(path)
+    return (path:match("%.([^%./]+)$") or ""):lower()
+end
+
+local function current_item()
     local item = vlc.input.item()
     if not item then
+        return nil, nil
+    end
+    local uri = item:uri()
+    local path = vlc.strings.decode_uri(uri):gsub("^file://", "")
+    return path, uri
+end
+
+-- Build the CLI argument list (everything after "<python> <script>").
+-- Mirrored by tests/test_vlc_invocation.py; keep the two in sync.
+function build_args(video, source, target, mode, in_place)
+    local args = { video }
+    if in_place then
+        table.insert(args, "--in-place")
+    else
+        table.insert(args, "--output-base")
+        table.insert(args, strip_extension(video))
+    end
+    if source ~= "auto" then
+        table.insert(args, "--source-lang")
+        table.insert(args, source)
+    end
+    if target ~= "same" then
+        table.insert(args, "--target-lang")
+        table.insert(args, target)
+    end
+    if mode == "dub" then
+        table.insert(args, "--dub-only")
+    elseif mode == "subs" then
+        table.insert(args, "--subtitle-only")
+    end
+    return args
+end
+
+local function read_file(path)
+    local fh = io.open(path, "r")
+    if not fh then
         return nil
     end
-    local path = vlc.strings.decode_uri(item:uri())
-    path = path:gsub("^file://", "")
-    return path
+    local text = fh:read("*a")
+    fh:close()
+    return text
+end
+
+local function close_dialog()
+    if dlg then
+        dlg:delete()
+        dlg = nil
+    end
+end
+
+local function show_status_dialog(message)
+    close_dialog()
+    dlg = vlc.dialog("Auto-Dub")
+    local status = dlg:add_label(message, 1, 1, 3, 1)
+
+    dlg:add_button("Check status", function()
+        local text = read_file(job.log) or ""
+        local code = text:match("AUTODUB_EXIT=(%d+)")
+        if not code then
+            local last = ""
+            for line in text:gmatch("[^\n]+") do
+                last = line
+            end
+            status:set_text("Working... " .. last)
+        elseif code == "0" then
+            if job.in_place then
+                status:set_text("Done. Click 'Reopen video' to load the new tracks.")
+            else
+                status:set_text("Done. Output written next to the video.")
+            end
+        else
+            local err = text:match("error: ([^\n]+)") or ("exit code " .. code)
+            status:set_text("Failed: " .. err .. " (log: " .. job.log .. ")")
+        end
+        dlg:update()
+    end, 1, 2, 1, 1)
+
+    dlg:add_button("Reopen video", function()
+        -- Reload the (rewritten) file at the current position so VLC sees the
+        -- new audio and subtitle tracks.
+        local seconds = 0
+        local input = vlc.object.input()
+        if input then
+            local t = vlc.var.get(input, "time") or 0
+            -- VLC 3 reports microseconds; older builds reported seconds.
+            seconds = (t > 100000) and math.floor(t / 1000000) or math.floor(t)
+        end
+        local current = vlc.playlist.current()
+        vlc.playlist.add({ { path = job.uri, options = { "start-time=" .. seconds } } })
+        if current then
+            vlc.playlist.delete(current)
+        end
+        close_dialog()
+    end, 2, 2, 1, 1)
+
+    dlg:add_button("Close", close_dialog, 3, 2, 1, 1)
+    dlg:show()
+end
+
+local function start_job(video, uri, python, script, source, target, mode, in_place)
+    local log = strip_extension(video) .. ".autodub.log"
+    local parts = { shquote(python), shquote(script) }
+    for _, arg in ipairs(build_args(video, source, target, mode, in_place)) do
+        table.insert(parts, shquote(arg))
+    end
+    -- Run in the background so VLC's UI thread is not blocked; the exit code is
+    -- appended to the log so the status button can tell success from failure.
+    local cmd = "( " .. table.concat(parts, " ") .. "; echo \"AUTODUB_EXIT=$?\" ) > "
+        .. shquote(log) .. " 2>&1 &"
+    vlc.msg.info("vlc-auto-dub: " .. cmd)
+    os.execute(cmd)
+    job = { video = video, uri = uri, log = log, in_place = in_place }
+    show_status_dialog("Started. This can take a while; you can keep watching.")
+end
+
+local function show_settings_dialog(video, uri, python, script)
+    close_dialog()
+    dlg = vlc.dialog("Auto-Dub settings")
+
+    dlg:add_label("Spoken language (source):", 1, 1, 1, 1)
+    local source_dd = dlg:add_dropdown(2, 1, 2, 1)
+    local sources = { "auto" }
+    source_dd:add_value("Auto-detect", 1)
+    for i, lang in ipairs(LANGUAGES) do
+        table.insert(sources, lang[1])
+        source_dd:add_value(lang[2] .. " (" .. lang[1] .. ")", i + 1)
+    end
+
+    dlg:add_label("Translate to (target):", 1, 2, 1, 1)
+    local target_dd = dlg:add_dropdown(2, 2, 2, 1)
+    local targets = {}
+    for i, lang in ipairs(LANGUAGES) do
+        table.insert(targets, lang[1])
+        target_dd:add_value(lang[2] .. " (" .. lang[1] .. ")", i)
+    end
+    table.insert(targets, "same")
+    target_dd:add_value("No translation (same as source)", #targets)
+
+    dlg:add_label("Produce:", 1, 3, 1, 1)
+    local mode_dd = dlg:add_dropdown(2, 3, 2, 1)
+    for i, m in ipairs(MODES) do
+        mode_dd:add_value(m[2], i)
+    end
+
+    local can_in_place = IN_PLACE_EXTENSIONS[extension_of(video)] == true
+    local in_place_cb = dlg:add_check_box(
+        "Add tracks into this file (keeps all original tracks)", can_in_place, 1, 4, 3, 1)
+    if not can_in_place then
+        dlg:add_label("(only .mp4/.m4v/.mov/.mkv can take tracks in place)", 1, 5, 3, 1)
+    end
+
+    dlg:add_button("Start", function()
+        local source = sources[source_dd:get_value()] or "auto"
+        local target = targets[target_dd:get_value()] or "same"
+        local mode = (MODES[mode_dd:get_value()] or MODES[1])[1]
+        local in_place = can_in_place and in_place_cb:get_checked()
+        start_job(video, uri, python, script, source, target, mode, in_place)
+    end, 1, 6, 1, 1)
+    dlg:add_button("Cancel", close_dialog, 2, 6, 1, 1)
+    dlg:show()
 end
 
 function activate()
-    local video = current_video_path()
+    local video, uri = current_item()
     if not video then
         vlc.msg.err("vlc-auto-dub: no media item is loaded")
         return
-    end
-
-    local base = strip_extension(video)
-    local srt = base .. ".srt"
-    local handle = io.open(srt, "r")
-    if handle then
-        handle:close()
-        vlc.msg.info("vlc-auto-dub: subtitles already exist for this video: " .. srt)
     end
 
     local cfg = load_config()
@@ -79,48 +253,16 @@ function activate()
         return
     end
 
-    show_language_prompt(video, base, python, script)
+    show_settings_dialog(video, uri, python, script)
 end
 
 function deactivate()
-    if dlg then
-        dlg:delete()
-        dlg = nil
-    end
+    close_dialog()
+end
+
+function close()
+    vlc.deactivate()
 end
 
 function meta_changed()
-end
-
-function show_language_prompt(video, base, python, script)
-    dlg = vlc.dialog("Auto-Dub settings")
-    dlg:add_label("Target language code (e.g. en, tr, de):", 1, 1, 2, 1)
-    local lang_input = dlg:add_text_input("en", 2, 1, 2, 1)
-
-    dlg:add_button("Dub now", function()
-        local target = lang_input:get_text()
-        if target == nil or target == "" then
-            target = "en"
-        end
-        dlg:delete()
-        dlg = nil
-
-        -- Fire and forget: run in the background so VLC's UI thread is not
-        -- blocked while ffmpeg/whisper/piper work. Progress goes to the log.
-        local log = base .. ".autodub.log"
-        local cmd = table.concat({
-            shquote(python), shquote(script), shquote(video),
-            "--output-base", shquote(base),
-            "--target-lang", shquote(target),
-            ">", shquote(log), "2>&1 &",
-        }, " ")
-        vlc.msg.info("vlc-auto-dub: " .. cmd)
-        os.execute(cmd)
-        vlc.msg.info("vlc-auto-dub: started; results will appear as " .. base .. ".srt")
-    end, 1, 3, 1, 1)
-
-    dlg:add_button("Cancel", function()
-        dlg:delete()
-        dlg = nil
-    end, 2, 3, 1, 1)
 end

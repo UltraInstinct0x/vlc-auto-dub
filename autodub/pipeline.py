@@ -15,7 +15,7 @@ import tempfile
 from . import media
 from .config import Config
 from .errors import AutoDubError, InputError, MediaError, ProviderError
-from .languages import normalize_code, primary_subtag
+from .languages import normalize_code, primary_subtag, track_language
 from .providers import make_stt, make_translator, make_tts
 from .subtitles import Cue, write_srt
 from .voices import effective_voice
@@ -38,7 +38,53 @@ def _resolve_outputs(input_path: str, output_base: str, has_video: bool) -> tupl
     return media_out, f"{output_base}.srt"
 
 
-def run(input_path: str, output_base: str, config: Config) -> dict:
+def _replace_in_place(input_path: str, audio: str | None, srt: str | None, language: str,
+                      subtitle_codec: str, input_hash: str, workdir: str) -> None:
+    """Add the tracks to ``input_path`` atomically.
+
+    The new file is written next to the original (same filesystem, so the final
+    rename is atomic), checked, and only then renamed over the original. Any
+    failure before the rename leaves the original byte-for-byte untouched.
+    """
+    folder, name = os.path.split(os.path.abspath(input_path))
+    stem, ext = os.path.splitext(name)
+    fd, tmp = tempfile.mkstemp(prefix=f".{stem}.autodub-", suffix=ext, dir=folder)
+    os.close(fd)
+    try:
+        expected = media.mux_tracks(input_path, tmp, audio=audio, srt=srt,
+                                    language=language, subtitle_codec=subtitle_codec)
+        _verify_rewrite(input_path, tmp, expected, language, audio is not None, srt is not None)
+        if _sha256(input_path) != input_hash:
+            raise MediaError("input file changed during processing; not replacing it")
+        shutil.copymode(input_path, tmp)
+        os.replace(tmp, input_path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def _verify_rewrite(original: str, rewritten: str, expected: dict, language: str,
+                    added_audio: bool, added_subs: bool) -> None:
+    streams = media.probe_streams(rewritten)
+    counts: dict[str, int] = {}
+    for s in streams:
+        kind = s.get("codec_type", "")
+        counts[kind] = counts.get(kind, 0) + 1
+    if counts != expected:
+        raise MediaError(f"rewritten file has streams {counts}, expected {expected}; "
+                         f"the original was left untouched")
+    ours = [s for s in streams if media.is_autodub_stream(s)
+            and s.get("tags", {}).get("language") == language]
+    want = ({"subtitle"} if added_subs else set()) | ({"audio"} if added_audio else set())
+    if {s.get("codec_type") for s in ours} != want:
+        raise MediaError("rewritten file is missing the labelled AutoDub tracks; "
+                         "the original was left untouched")
+    if abs(media.duration(rewritten) - media.duration(original)) > 1.0:
+        raise MediaError("rewritten file duration differs from the original; "
+                         "the original was left untouched")
+
+
+def run(input_path: str, output_base: str | None, config: Config) -> dict:
     """Run the dubbing pipeline. Returns a summary dict."""
     if not os.path.isfile(input_path):
         raise InputError(f"input file not found: {input_path}")
@@ -49,9 +95,27 @@ def run(input_path: str, output_base: str, config: Config) -> dict:
         raise InputError(f"input has no audio stream: {input_path}")
     has_video = media.has_video_stream(input_path)
 
-    output_media, output_srt = _resolve_outputs(input_path, output_base, has_video)
-    if os.path.abspath(input_path) == os.path.abspath(output_media):
-        raise InputError("output would overwrite the input file; choose a different --output-base")
+    subtitle_codec = None
+    audio_index = None
+    if config.in_place:
+        ext = os.path.splitext(input_path)[1].lower()
+        subtitle_codec = media.IN_PLACE_SUBTITLE_CODEC.get(ext)
+        if subtitle_codec is None:
+            supported = ", ".join(sorted(media.IN_PLACE_SUBTITLE_CODEC))
+            raise InputError(f"--in-place supports {supported} files, not {ext or 'no extension'!r}")
+        if not os.access(os.path.dirname(os.path.abspath(input_path)), os.W_OK):
+            raise InputError(f"--in-place needs write access to the folder of {input_path}")
+        # Transcribe the original speech, never an AutoDub track from an earlier run.
+        audio_streams = [s for s in media.probe_streams(input_path) if s.get("codec_type") == "audio"]
+        originals = [i for i, s in enumerate(audio_streams) if not media.is_autodub_stream(s)]
+        audio_index = originals[0] if originals else None
+        output_media, output_srt = os.path.abspath(input_path), None
+    else:
+        if not output_base:
+            raise InputError("--output-base is required unless --in-place is used")
+        output_media, output_srt = _resolve_outputs(input_path, output_base, has_video)
+        if os.path.abspath(input_path) == os.path.abspath(output_media):
+            raise InputError("output would overwrite the input file; choose a different --output-base")
 
     source_lang = normalize_code(config.source_lang) if config.source_lang else None
     target_lang = normalize_code(config.target_lang) if config.target_lang else None
@@ -62,14 +126,16 @@ def run(input_path: str, output_base: str, config: Config) -> dict:
     input_hash_before = _sha256(input_path)
 
     workdir = (
-        output_base + ".work"
+        (output_base or os.path.splitext(input_path)[0]) + ".work"
         if config.keep_workdir
         else tempfile.mkdtemp(prefix="autodub-")
     )
     os.makedirs(workdir, exist_ok=True)
 
+    if config.subtitle_only and config.dub_only:
+        raise InputError("--subtitle-only and --dub-only cannot be combined")
+
     stt = make_stt(config.stt)
-    translator = make_translator(config.translate) if do_translate else None
 
     # TTS voice follows the target language (falling back to the source language,
     # then to the provider default); an explicit --voice always wins.
@@ -82,7 +148,8 @@ def run(input_path: str, output_base: str, config: Config) -> dict:
         "input": os.path.abspath(input_path),
         "output_video": os.path.abspath(output_media),
         "output_media": os.path.abspath(output_media),
-        "output_srt": os.path.abspath(output_srt),
+        "output_srt": os.path.abspath(output_srt) if output_srt else None,
+        "in_place": config.in_place,
         "has_video": has_video,
         "providers": {"stt": config.stt, "tts": None if config.subtitle_only else config.tts},
         "voice": voice,
@@ -94,10 +161,22 @@ def run(input_path: str, output_base: str, config: Config) -> dict:
 
     try:
         audio = os.path.join(workdir, "audio.wav")
-        media.extract_audio(input_path, audio)
+        media.extract_audio(input_path, audio, audio_index=audio_index)
         source_dur = media.duration(audio)
 
         raw_segments = stt.transcribe(audio, source_code or None)
+        if not source_code and target_code:
+            # Source left on auto: translate from whatever the STT detected.
+            detected = getattr(stt, "detected_language", None)
+            if detected:
+                source_code = primary_subtag(detected)
+                source_lang = source_code
+                summary["detected_language"] = source_code
+            else:
+                summary["warnings"].append(
+                    "source language could not be detected; not translating")
+            do_translate = bool(source_code and source_code != target_code)
+        translator = make_translator(config.translate) if do_translate else None
 
         segments = []
         unchanged = 0
@@ -125,9 +204,19 @@ def run(input_path: str, output_base: str, config: Config) -> dict:
         summary["segment_count"] = len(segments)
 
         cues = [Cue(start=s, end=e, text=t) for (s, e, t) in segments]
-        write_srt(cues, output_srt)
+        if config.dub_only:
+            srt_path = None
+            summary["output_srt"] = None
+        else:
+            srt_path = output_srt or os.path.join(workdir, "subtitles.srt")
+            write_srt(cues, srt_path)
+        language = track_language(target_lang or source_lang)
+        summary["track_language"] = language
 
         if config.subtitle_only:
+            if config.in_place:
+                _replace_in_place(input_path, None, srt_path, language, subtitle_codec,
+                                  input_hash_before, workdir)
             summary["mode"] = "subtitle-only"
             return summary
         assert tts is not None  # set whenever we are not in subtitle-only mode
@@ -165,6 +254,13 @@ def run(input_path: str, output_base: str, config: Config) -> dict:
                 f"(tolerance {config.duration_tolerance}s)"
             )
 
+        if config.in_place:
+            _replace_in_place(input_path, dubbed, srt_path, language, subtitle_codec,
+                              input_hash_before, workdir)
+            summary["dubbed_duration"] = round(dubbed_dur, 3)
+            summary["source_duration"] = round(source_dur, 3)
+            summary["mode"] = "full"
+            return summary
         if has_video:
             media.mux(input_path, dubbed, output_media)
         else:

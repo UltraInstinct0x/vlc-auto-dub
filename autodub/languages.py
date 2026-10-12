@@ -31,3 +31,25 @@ def normalize_code(code: str) -> str:
 def primary_subtag(code: str) -> str:
     """Return just the primary subtag (``pt-BR`` -> ``pt``)."""
     return normalize_code(code).split("-")[0]
+
+
+# ISO 639-1 -> ISO 639-2/B, the form Matroska and MP4 track tags use.
+_ISO639_2 = {
+    "ar": "ara", "bg": "bul", "ca": "cat", "cs": "cze", "da": "dan", "de": "ger",
+    "el": "gre", "en": "eng", "es": "spa", "et": "est", "fa": "per", "fi": "fin",
+    "fr": "fre", "he": "heb", "hi": "hin", "hr": "hrv", "hu": "hun", "id": "ind",
+    "it": "ita", "ja": "jpn", "ko": "kor", "lt": "lit", "lv": "lav", "nl": "dut",
+    "no": "nor", "pl": "pol", "pt": "por", "ro": "rum", "ru": "rus", "sk": "slo",
+    "sl": "slv", "sr": "srp", "sv": "swe", "th": "tha", "tr": "tur", "uk": "ukr",
+    "vi": "vie", "zh": "chi",
+}
+
+
+def track_language(code: str | None) -> str:
+    """Return the 3-letter track language tag for ``code`` (``und`` if unknown)."""
+    if not code:
+        return "und"
+    primary = primary_subtag(code)
+    if len(primary) == 3:
+        return primary
+    return _ISO639_2.get(primary, "und")

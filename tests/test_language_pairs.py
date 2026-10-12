@@ -158,3 +158,46 @@ def test_http_backend_is_off_by_default(monkeypatch):
     with pytest.raises(DependencyError) as exc:
         HttpTranslator().translate("hello", "en", "de")
     assert "AUTODUB_TRANSLATE_URL" in str(exc.value)
+
+
+def test_pivot_through_english_when_no_direct_pack(monkeypatch):
+    """No direct src->tgt pack: translate src->en->tgt (deterministic, offline)."""
+    from autodub.providers.translate_argos import ArgosTranslator
+
+    class FakeTr:
+        @staticmethod
+        def translate(text, src, tgt):
+            return f"{text}|{src}>{tgt}"
+
+    available = {("es", "en"), ("en", "tr")}
+
+    def ensure(self, src, tgt):
+        if (src, tgt) not in available:
+            raise ProviderError(f"no pack {src}->{tgt}")
+
+    monkeypatch.setattr(ArgosTranslator, "_ensure_pair", ensure)
+    monkeypatch.setattr(ArgosTranslator, "_load", lambda self: (None, FakeTr))
+    assert ArgosTranslator().translate("hola", "es", "tr") == "hola|es>en|en>tr"
+
+
+def test_pivot_failure_reports_the_direct_pair(monkeypatch):
+    from autodub.providers.translate_argos import ArgosTranslator
+
+    def ensure(self, src, tgt):
+        raise ProviderError(f"no pack {src}->{tgt}")
+
+    monkeypatch.setattr(ArgosTranslator, "_ensure_pair", ensure)
+    monkeypatch.setattr(ArgosTranslator, "_load", lambda self: (None, None))
+    with pytest.raises(ProviderError, match="es->tr"):
+        ArgosTranslator().translate("hola", "es", "tr")
+
+
+def test_real_argos_pivot_es_to_tr():
+    """Argos has no es->tr pack; the real provider must still produce Turkish."""
+    ensure_argos_pair("es", "en")
+    ensure_argos_pair("en", "tr")
+    from autodub.providers.translate_argos import ArgosTranslator
+
+    text = "Buenos días, la reunión empieza a las nueve."
+    out = ArgosTranslator().translate(text, "es", "tr")
+    assert out and out.strip().lower() != text.strip().lower()

@@ -11,10 +11,14 @@ from __future__ import annotations
 
 from ..errors import DependencyError, ProviderError
 
+# Pivot language for pairs Argos has no direct pack for.
+PIVOT = "en"
+
 
 class ArgosTranslator:
     def __init__(self) -> None:
         self._ready: set[tuple[str, str]] = set()
+        self._routes: dict[tuple[str, str], list[tuple[str, str]]] = {}
         self._module = None
 
     def _load(self):
@@ -101,15 +105,37 @@ class ArgosTranslator:
             )
         self._ready.add((source, target))
 
+    def _route(self, source: str, target: str) -> list[tuple[str, str]]:
+        """Return the translation legs: direct, or through English when no direct
+        pack exists (Argos ships most languages only to/from English, e.g. there is
+        no es->tr pack but es->en and en->tr exist)."""
+        if (source, target) in self._routes:
+            return self._routes[(source, target)]
+        try:
+            self._ensure_pair(source, target)
+            route = [(source, target)]
+        except ProviderError as direct_error:
+            if PIVOT in (source, target):
+                raise
+            try:
+                self._ensure_pair(source, PIVOT)
+                self._ensure_pair(PIVOT, target)
+            except ProviderError:
+                raise direct_error from None
+            route = [(source, PIVOT), (PIVOT, target)]
+        self._routes[(source, target)] = route
+        return route
+
     def translate(self, text: str, source: str, target: str) -> str:
         if source == target:
             return text
-        self._ensure_pair(source, target)
         _pkg, tr = self._load()
-        try:
-            return tr.translate(text, source, target)
-        except Exception as exc:  # noqa: BLE001
-            raise ProviderError(
-                f"argos translation {source!r}->{target!r} failed: {exc}; verify the pack: "
-                f"{self._install_hint(source, target)}"
-            ) from exc
+        for src, tgt in self._route(source, target):
+            try:
+                text = tr.translate(text, src, tgt)
+            except Exception as exc:  # noqa: BLE001
+                raise ProviderError(
+                    f"argos translation {src!r}->{tgt!r} failed: {exc}; verify the pack: "
+                    f"{self._install_hint(src, tgt)}"
+                ) from exc
+        return text

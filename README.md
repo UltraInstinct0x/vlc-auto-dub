@@ -6,7 +6,9 @@
 
 Dubs a video file end to end: extract audio → transcribe (STT) → **optional
 translate** → synthesize speech (TTS) → fit each clip to its time slot →
-assemble → mux a new audio track. The original media is never modified.
+assemble → mux a new audio track. By default the original media is never
+modified; with `--in-place` the dub and subtitles are added to the file itself
+as extra tracks (every original track kept, atomic replace).
 
 Everything runs locally. The default path is **fully local and
 content-agnostic**: `faster-whisper` (speech-to-text), `argostranslate`
@@ -50,6 +52,12 @@ python main.py INPUT --output-base BASE [options]
 Writes `<BASE>_dubbed<ext>` (dubbed video) and `<BASE>.srt` (subtitles).
 
 ```bash
+python main.py INPUT --in-place [options]
+```
+
+Adds the tracks to `INPUT` itself instead (`.mp4`/`.m4v`/`.mov`/`.mkv`).
+
+```bash
 # Dub an English video into Turkish (transcription + translation + TTS)
 python main.py movie.mp4 --output-base movie_tr \
     --source-lang en --target-lang tr
@@ -59,6 +67,12 @@ python main.py clip.mp4 --output-base clip --source-lang en --tts espeak
 
 # Subtitles only (no TTS, no muxing)
 python main.py talk.mp4 --output-base talk --subtitle-only
+
+# Add a Turkish dub + subtitle track inside the file; source auto-detected
+python main.py movie.mkv --in-place --target-lang tr
+
+# Dub track only, no subtitles
+python main.py movie.mp4 --in-place --source-lang en --target-lang de --dub-only
 
 # Choose providers / voice explicitly
 python main.py v.mp4 --output-base v --stt whisper --translate argos \
@@ -70,14 +84,16 @@ python main.py v.mp4 --output-base v --stt whisper --translate argos \
 | Option | Description | Default |
 |---|---|---|
 | `INPUT` | input video file (never modified) | required |
-| `--output-base BASE` | writes `BASE_dubbed<ext>` and `BASE.srt` | required |
+| `--output-base BASE` | writes `BASE_dubbed<ext>` and `BASE.srt` | required unless `--in-place` |
+| `--in-place` | add the tracks inside `INPUT` (see below) | off |
 | `--source-lang` | source language code, e.g. `en` | STT auto-detect |
 | `--target-lang` | target language; when it differs from the source, translate | off |
 | `--stt` | STT provider: `whisper`, `fake` | `whisper` |
 | `--translate` | translation provider: `argos`, `http`, `fake` | `argos` |
 | `--tts` | TTS provider: `piper`, `espeak`, `fake` | `piper` |
 | `--voice` | provider-specific voice name | provider default |
-| `--subtitle-only` | write only the SRT | off |
+| `--subtitle-only` | subtitles only, no dub | off |
+| `--dub-only` | dub only, no subtitles | off |
 | `--keep-workdir` | keep intermediates at `BASE.work` | off |
 | `--config FILE` | config file (`key = value` or JSON) | none |
 
@@ -85,7 +101,31 @@ Config-file keys mirror the flags (`stt`, `translate`, `tts`, `voice`); the
 environment variables `AUTODUB_STT`, `AUTODUB_TRANSLATE`, `AUTODUB_TTS`,
 `AUTODUB_VOICE` are also read (CLI flags win).
 
+### `--in-place`
+
+- Keeps **every** original video, audio, subtitle and attachment stream; nothing
+  from the source is re-encoded. Only the new dub is encoded (AAC).
+- The dub becomes the **default** audio track, tagged with its ISO 639-2
+  language (`tur`, `ger`, ...) and titled `AutoDub (<lang>)`.
+- Subtitles go in as a track in the format the container accepts: `mov_text`
+  for MP4/M4V/MOV, SubRip for MKV. MP4 players usually enable the first
+  subtitle track automatically; MKV leaves it off until selected.
+- Re-running for the same language **replaces** the earlier AutoDub tracks;
+  a different language adds another pair. Transcription always reads the
+  original audio, never an earlier dub.
+- Safety: the result is written to a hidden temp file in the same folder,
+  verified (stream counts, labelled tracks, duration), and only then renamed
+  over the original in one atomic step. Any failure before that leaves the
+  original byte-for-byte untouched and removes the temp file.
+
 ### Languages and voices
+
+- **Source auto-detect**: omit `--source-lang` and the STT model detects the
+  spoken language; translation then runs from the detected language. The file's
+  own language tag is not trusted (it is often wrong).
+- **Pivot translation**: Argos ships most languages only to/from English, so when
+  no direct pack exists (e.g. `es->tr`) the text is translated through English
+  (`es->en->tr`), installing both packs on demand.
 
 - Language codes are validated as ISO-ish (`en`, `tr`, `de`, `pt-BR`, ...).
 - **Translation packs install on demand** for the requested pair on first use.
@@ -132,8 +172,21 @@ are sent.
 
 ## VLC integration
 
-`transcribe.vlc.lua` adds an **Auto-Dub** menu item that runs the CLI on the
-currently playing file and writes `<base>.srt` / `<base>_dubbed<ext>`.
+`transcribe.vlc.lua` adds **Auto-Dub** to VLC's Extensions menu (macOS: the
+**VLC** app menu → Extensions). Its dialog offers:
+
+- **Spoken language**: Auto-detect or a fixed language.
+- **Translate to**: a target language, or no translation.
+- **Produce**: Dub + subtitles, Dub only, or Subtitles only.
+- **Add tracks into this file** (on by default for MP4/M4V/MOV/MKV): runs
+  `--in-place`. Untick it to write `<base>_dubbed<ext>` / `<base>.srt` instead.
+
+The job runs in the background (log: `<base>.autodub.log`). **Check status**
+reads the log; **Reopen video** reloads the rewritten file at the current
+position so the new tracks appear under Audio → Audio Track and Subtitle →
+Sub Track. VLC launched from the Dock has a minimal `PATH`; the CLI adds
+`/opt/homebrew/bin`, `/usr/local/bin` and `~/.local/bin` itself so ffmpeg is
+still found.
 
 It has **no hardcoded path**. Configure once in
 `~/.config/vlc-auto-dub/config.lua`:
@@ -150,12 +203,9 @@ extensions directory, e.g. on Linux
 `~/.local/share/vlc/lua/extensions/`, on macOS
 `~/Library/Application\ Support/org.videolan.vlc/lua/extensions/`.
 
-The extension's argument contract (verified by tests, not inside VLC):
-`"<python>" "<script>" "<video>" --output-base "<base>" --target-lang "<lang>"`.
-It runs the job in the background so VLC's UI thread is not blocked, and logs to
-`<base>.autodub.log`. The VLC runtime itself was **not** exercised in CI/here
-(no VLC Lua host); the extension is *invocation-verified* and *syntax-checked*,
-not *VLC-verified*.
+Tests execute the extension's real `build_args()` with a standalone Lua
+interpreter and run the CLI with the argv it produces. The dialog code itself
+needs VLC's Lua host and is only syntax-checked in CI.
 
 ## Testing
 

@@ -17,6 +17,7 @@ class WhisperSTT:
         self.device = device
         self.compute_type = compute_type
         self._model = None
+        self.detected_language: str | None = None
 
     def _load(self):
         if self._model is None:
@@ -38,13 +39,14 @@ class WhisperSTT:
         model = self._load()
         samples = read_samples(audio_path)
         try:
-            seg_iter, _info = model.transcribe(
+            seg_iter, info = model.transcribe(
                 samples, language=language, beam_size=1, vad_filter=False
             )
             segments = [
                 Segment(float(s.start), float(s.end), s.text.strip())
                 for s in seg_iter
             ]
+            self.detected_language = language or getattr(info, "language", None)
         except Exception as exc:  # noqa: BLE001 - surfaced as a clear provider error
             raise ProviderError(f"whisper transcription failed: {exc}") from exc
         return [s for s in segments if s.text]

@@ -4,7 +4,8 @@
 Pipeline: extract audio -> transcribe (STT) -> optional translate -> synthesize
 speech (TTS) -> fit each clip to its time slot -> assemble -> mux.
 
-The original media is never modified.
+By default the original media is never modified. With --in-place the dub and
+subtitles are added to the input file as extra tracks, atomically.
 """
 from __future__ import annotations
 
@@ -22,10 +23,17 @@ def build_parser() -> argparse.ArgumentParser:
         description="Dub a video's speech into subtitles and an alternate audio track.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("input", help="path to the input video file (never modified)")
+    parser.add_argument("input", help="path to the input video file "
+                                      "(never modified unless --in-place)")
     parser.add_argument(
-        "--output-base", required=True,
-        help="output path base; writes <base>_dubbed<ext> and <base>.srt",
+        "--output-base", default=None,
+        help="output path base; writes <base>_dubbed<ext> and <base>.srt "
+             "(required unless --in-place)",
+    )
+    parser.add_argument(
+        "--in-place", action="store_true",
+        help="add the dub (default audio track) and subtitles as tracks inside the "
+             "input file, keeping all original tracks; .mp4/.m4v/.mov/.mkv only",
     )
     parser.add_argument("--source-lang", default=None,
                         help="source language code, e.g. en (default: STT auto-detect)")
@@ -39,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--voice", default=None, help="provider-specific voice name")
     parser.add_argument("--subtitle-only", action="store_true",
                         help="write only the SRT; skip TTS and muxing")
+    parser.add_argument("--dub-only", action="store_true",
+                        help="produce only the dubbed audio; no subtitles")
     parser.add_argument("--keep-workdir", action="store_true",
                         help="keep intermediate files at <output-base>.work")
     parser.add_argument("--config", default=None, help="path to a config file (key = value or JSON)")
@@ -46,7 +56,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not args.in_place and not args.output_base:
+        parser.error("--output-base is required unless --in-place is used")
+    if args.subtitle_only and args.dub_only:
+        parser.error("--subtitle-only and --dub-only cannot be combined")
     config = build_config(
         config_path=args.config,
         stt=args.stt,
@@ -57,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
         target_lang=args.target_lang,
         subtitle_only=args.subtitle_only,
         keep_workdir=args.keep_workdir,
+        in_place=args.in_place,
+        dub_only=args.dub_only,
     )
     try:
         summary = run(args.input, args.output_base, config)
@@ -67,12 +84,25 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[autodub] mode: {summary['mode']}")
     print(f"[autodub] STT: {summary['providers']['stt']}"
           + (f", TTS: {summary['providers']['tts']}" if summary["providers"]["tts"] else ""))
+    if summary.get("detected_language"):
+        print(f"[autodub] detected source language: {summary['detected_language']}")
     print(f"[autodub] translation: {'yes' if summary['translated'] else 'no'}")
     print(f"[autodub] segments: {summary['segment_count']}")
     print(f"[autodub] voice: {summary.get('voice') or '(provider default)'}")
-    print(f"[autodub] subtitles: {summary['output_srt']}")
-    if summary["mode"] == "full":
-        print(f"[autodub] media: {summary['output_media']}")
+    if summary["in_place"]:
+        if summary["mode"] == "subtitle-only":
+            added = "subtitle track"
+        elif args.dub_only:
+            added = "dub audio track (default)"
+        else:
+            added = "dub audio track (default) + subtitle track"
+        print(f"[autodub] in-place: added {added} "
+              f"[{summary['track_language']}] to {summary['output_media']}")
+    else:
+        if summary["output_srt"]:
+            print(f"[autodub] subtitles: {summary['output_srt']}")
+        if summary["mode"] == "full":
+            print(f"[autodub] media: {summary['output_media']}")
     for warning in summary["warnings"]:
         print(f"[autodub] warning: {warning}", file=sys.stderr)
     return 0

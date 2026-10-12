@@ -28,6 +28,8 @@ class Config:
     target_lang: str | None = None
     subtitle_only: bool = False
     keep_workdir: bool = False
+    in_place: bool = False
+    dub_only: bool = False
     duration_tolerance: float = DEFAULT_DURATION_TOLERANCE
 
 
@@ -58,6 +60,8 @@ def build_config(
     target_lang: str | None = None,
     subtitle_only: bool = False,
     keep_workdir: bool = False,
+    in_place: bool = False,
+    dub_only: bool = False,
 ) -> Config:
     data: dict = {}
     if config_path:
@@ -79,4 +83,6 @@ def build_config(
         target_lang=target_lang,
         subtitle_only=subtitle_only,
         keep_workdir=keep_workdir,
+        in_place=in_place,
+        dub_only=dub_only,
     )
