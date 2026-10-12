@@ -10,6 +10,7 @@ subtitles are added to the input file as extra tracks, atomically.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from autodub.config import DEFAULT_STT, DEFAULT_TRANSLATE, DEFAULT_TTS, build_config
@@ -109,4 +110,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    code = main()
+    # Exit without running native library teardown. onnxruntime (piper) keeps a
+    # telemetry thread alive that races torch's static destructors (pulled in by
+    # argostranslate/stanza) at interpreter exit, segfaulting (exit 139) *after*
+    # all work is done and written. Everything is flushed first.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
