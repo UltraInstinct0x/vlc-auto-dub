@@ -8,8 +8,12 @@ Dubs a video file end to end: extract audio → transcribe (STT) → **optional
 translate** → synthesize speech (TTS) → fit each clip to its time slot →
 assemble → mux a new audio track. The original media is never modified.
 
-Everything runs locally. No media is uploaded anywhere by the default
-providers, and no API key is required.
+Everything runs locally. The default path is **fully local and
+content-agnostic**: `faster-whisper` (speech-to-text), `argostranslate`
+(translation) and `piper`/`espeak-ng` (speech). No media or transcripts leave
+your machine, there is **no moderation/content gate, no telemetry, and no
+refusal based on the material** — it processes any file it is handed, in any
+language pair the local backends support. No API key is required.
 
 ## What it does
 
@@ -22,7 +26,12 @@ providers, and no API key is required.
   (local, CPU) or `espeak-ng` (small, no model download).
 - **Time-aligned output**: each synthesized clip is fitted into its segment's
   `[start, end]` window, and non-speech audio is preserved from the source.
-- **Subtitles**: writes an UTF-8 `.srt` next to the dubbed video.
+- **Language-general**: `--source-lang`/`--target-lang` accept arbitrary
+  ISO-style codes the local backends support. Missing argos packs install on
+  demand; the TTS voice follows the target language.
+- **Subtitles**: writes an UTF-8 `.srt` next to the dubbed media.
+- **Handles real inputs**: video or audio-only files, any container ffmpeg
+  reads, paths with spaces/non-ASCII characters, and non-ASCII source text.
 
 ## Requirements
 
@@ -75,6 +84,18 @@ python main.py v.mp4 --output-base v --stt whisper --translate argos \
 Config-file keys mirror the flags (`stt`, `translate`, `tts`, `voice`); the
 environment variables `AUTODUB_STT`, `AUTODUB_TRANSLATE`, `AUTODUB_TTS`,
 `AUTODUB_VOICE` are also read (CLI flags win).
+
+### Languages and voices
+
+- Language codes are validated as ISO-ish (`en`, `tr`, `de`, `pt-BR`, ...).
+- **Translation packs install on demand** for the requested pair on first use.
+  If a pair does not exist, the run fails with a clear message naming the exact
+  pair and the install command (`argospm install translate-<src>_<tgt>`) — it
+  never silently emits source-language audio as if it were the target.
+- **TTS voice follows the target language**: `espeak` uses the language code as
+  its voice; `piper` maps a set of languages (en, de, fr, es, it, tr, ru, pt) to
+  real voices and falls back to `en_US-lessac-medium` for an unmapped language,
+  recording a warning. An explicit `--voice` always overrides.
 
 ### Models and downloads
 
@@ -161,13 +182,24 @@ scripts/make_fixture.sh fixture.mp4 4
   muxing, subtitles) but transcription, translation and speech quality depend on
   the models; a `tiny` STT model and offline translation are deliberately small
   and will make mistakes.
+- **Audio-only input** produces an audio-only output (`<base>_dubbed.wav`); there
+  is no video to carry.
 - **Single speaker assumed.** No diarization or per-speaker voice mapping.
-- **Translation** only covers language pairs argostranslate ships; the `http`
-  backend is untested.
-- **Piper** speaks the voice you pick; matching the source speaker's voice is out
-  of scope.
+- **Translation** only covers language pairs argostranslate ships; an unavailable
+  pair is a clear error, and the `http` backend is untested (off by default).
+- **Piper** speaks the mapped voice for the target language; matching the source
+  speaker's voice is out of scope, and unmapped languages fall back to English.
 - **The Docker path** (`Dockerfile`, `run_docker.sh`) is legacy and was **not**
   rebuilt or run for this change.
+
+## Privacy
+
+The default pipeline is **offline and content-agnostic**. `faster-whisper`,
+`argostranslate` and `piper`/`espeak-ng` run on your machine; no media,
+transcript or metadata is uploaded, and there is no moderation gate, telemetry
+or automatic refusal. The only network access is one-time model/voice/translation
+downloads. The `http` translation backend is inert unless you explicitly set
+`AUTODUB_TRANSLATE_URL`, and it sends only the text spans you allow.
 
 ## License
 
