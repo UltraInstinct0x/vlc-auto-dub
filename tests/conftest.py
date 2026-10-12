@@ -20,12 +20,25 @@ def _run(cmd: list[str]) -> None:
 
 
 def make_tone_video(path: str, duration: float = 4.0, size: str = "320x240") -> str:
-    """A video with a synthesized 440 Hz tone as its audio track."""
+    """A video with a synthesized 440 Hz tone as its audio track.
+
+    The container is inferred from ``path``'s extension (mp4, mkv, ...).
+    """
     _run([
         "ffmpeg", "-y", "-v", "error",
         "-f", "lavfi", "-i", f"testsrc=size={size}:rate=15:duration={duration}",
         "-f", "lavfi", "-i", f"sine=frequency=440:duration={duration}",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", path,
+    ])
+    return path
+
+
+def make_tone_audio(path: str, duration: float = 4.0) -> str:
+    """An audio-only file (no video stream) with a synthesized tone."""
+    _run([
+        "ffmpeg", "-y", "-v", "error",
+        "-f", "lavfi", "-i", f"sine=frequency=440:duration={duration}",
+        "-c:a", "libmp3lame" if path.endswith(".mp3") else "aac", path,
     ])
     return path
 
@@ -59,3 +72,11 @@ def speech_video(tmp_path_factory) -> str:
     return make_speech_video(
         out, text="the quick brown fox jumps over the lazy dog", duration=4.0
     )
+
+
+@pytest.fixture(scope="session")
+def audio_only(tmp_path_factory) -> str:
+    if not HAVE_FFMPEG:
+        pytest.skip("ffmpeg not available")
+    out = str(tmp_path_factory.mktemp("media") / "tone.mp3")
+    return make_tone_audio(out, duration=4.0)
