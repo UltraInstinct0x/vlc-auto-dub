@@ -10,12 +10,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .errors import DependencyError, ProviderError
+from .progress import progress
 from .providers.base import Segment
 
 MODEL_ID = "MIT/ast-finetuned-audioset-10-10-0.4593"
 SAMPLE_RATE = 16000
-WINDOW = 2.0          # seconds of audio per classification
-HOP = 1.0
+# AST always pads its input to ~10 s, so tiny windows waste compute; 5 s with a
+# 2.5 s hop is a balance between speed and where a tag lands.
+WINDOW = 5.0          # seconds of audio per classification
+HOP = 2.5
 MIN_GAP = 1.0         # ignore gaps shorter than this
 MAX_TAG_SECONDS = 4.0
 REPEAT_COOLDOWN = 20.0  # don't repeat the same tag within this many seconds
@@ -136,6 +139,7 @@ class SoundTagger:
     def __init__(self):
         self._model = None
         self._extractor = None
+        self._device = "cpu"
 
     def _load(self):
         if self._model is None:
@@ -147,9 +151,22 @@ class SoundTagger:
                     "sound tags need 'transformers' and 'torch' "
                     "(pip install -r requirements.txt), or pass --no-sound-tags"
                 ) from exc
+            import os
+            import warnings
+
+            import torch
+            from transformers.utils import logging as hf_logging
+
+            # keep the job log readable: no download bars or mel-filter warnings
+            os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+            hf_logging.set_verbosity_error()
+            hf_logging.disable_progress_bar()
+            warnings.filterwarnings("ignore", message="At least one mel filter")
+            self._device = "mps" if torch.backends.mps.is_available() else "cpu"
             try:
                 self._extractor = ASTFeatureExtractor.from_pretrained(MODEL_ID)
                 self._model = ASTForAudioClassification.from_pretrained(MODEL_ID).eval()
+                self._model.to(self._device)
             except Exception as exc:  # noqa: BLE001
                 raise ProviderError(f"could not load sound-tag model {MODEL_ID}: {exc}") from exc
         return self._model, self._extractor
@@ -160,12 +177,18 @@ class SoundTagger:
         model, extractor = self._load()
         labels = model.config.id2label
         out: list[dict] = []
+        reported = 0
         for i in range(0, len(windows), 16):
+            pct = int(100 * i / len(windows))
+            if pct >= reported + 10:
+                reported = pct - pct % 10
+                progress(f"detecting sound tags {reported}%")
             chunk = windows[i:i + 16]
             audio = [samples[int(s * SAMPLE_RATE):int(e * SAMPLE_RATE)] for s, e in chunk]
             inputs = extractor(audio, sampling_rate=SAMPLE_RATE, return_tensors="pt")
+            inputs = {k: v.to(self._device) for k, v in inputs.items()}
             with torch.no_grad():
-                probs = torch.sigmoid(model(**inputs).logits)
+                probs = torch.sigmoid(model(**inputs).logits).cpu()
             for row in probs:
                 out.append({labels[j]: float(p) for j, p in enumerate(row) if p >= 0.1})
         return out

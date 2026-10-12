@@ -21,8 +21,13 @@ def test_gaps_exclude_speech_and_short_pauses():
 
 
 def test_windows_cover_gap():
-    ws = windows_for((10.0, 15.0))
-    assert ws[0] == (10.0, 12.0) and ws[-1][1] == pytest.approx(15.0)
+    from autodub.sound_events import HOP, WINDOW
+
+    ws = windows_for((10.0, 10.0 + 3 * WINDOW))
+    assert ws[0] == (10.0, 10.0 + WINDOW)
+    assert ws[-1][1] == pytest.approx(10.0 + 3 * WINDOW)
+    assert all(b - a == pytest.approx(WINDOW) for a, b in ws)
+    assert ws[1][0] - ws[0][0] == pytest.approx(HOP)
     assert windows_for((1.0, 2.2)) == [(1.0, 2.2)]
 
 
