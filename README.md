@@ -1,51 +1,53 @@
 # VLC AI Auto-Dubbing Extension 🎙️🔄
 
-> Automatically dub and transcribe any video in VLC using AI - powered by faster-whisper
+> Transcribe a video's audio and generate a dubbed track with faster-whisper and local speech synthesis
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## 🎯 What it does
 
-Transform any video played in VLC with AI-powered dubbing and transcription:
-- 🤖 Automatic speech recognition and translation
-- 🗣️ Natural-sounding AI voice synthesis
-- 🎚️ Smart volume mixing and adjustment
-- 🎬 Direct VLC integration
-- 🐳 Easy setup with Docker
+Process a video's audio with local transcription and speech synthesis:
+- Automatic speech recognition (transcription) with faster-whisper
+- Speech synthesis for the transcribed text with pyttsx3
+- Volume lowering and mixing of the dubbed audio
+- A Docker image that bundles ffmpeg, faster-whisper and pyttsx3
+- An included VLC Lua extension (see limitations below)
 
-## Key Features
+## Key features
 
-- **Zero Dependencies**: All AI models run in Docker
-- **Easy Integration**: Works as a native VLC extension
-- **Offline Processing**: Process videos locally on your machine
-- **High Quality**: Uses state-of-the-art AI models
+- **Containerized pipeline**: the Docker image bundles all processing tools.
+- **Local processing**: no media leaves your machine for the Docker pipeline.
+- **Subtitle output**: writes an SRT file next to the dubbed video.
 
 ## Overview
 
-This project provides a Docker-based tool that automatically creates dubbed audio tracks from videos. The process includes:
+This project provides a Docker-based tool that creates a dubbed audio track from a video. The process:
 
-1. 🎵 Audio extraction from video
-2. 🎙️ Speech-to-text transcription using faster-whisper
-3. 🔊 Smart volume adjustment for spoken segments
-4. 🗣️ Text-to-speech generation
-5. 🎚️ Audio overlay and mixing
-6. 🎼 Final audio track compilation
+1. Extract the audio track from the video.
+2. Transcribe speech with faster-whisper.
+3. Lower the original voice in each spoken segment.
+4. Synthesize speech for the transcribed text with pyttsx3.
+5. Mix the synthesized speech over the lowered segment.
+6. Concatenate the processed segments and the non-speech audio.
+7. Write the dubbed audio, the subtitle file, and the final video.
 
-> **Note**: All dependencies are containerized - no local Python packages needed!
+> **Note**: The Docker image installs its dependencies (ffmpeg, espeak, faster-whisper, pyttsx3), so the Python packages are not needed on the host for the Docker path.
 
 ## Quick Start
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/vlc-extension.git
-cd vlc-extension
+git clone https://github.com/UltraInstinct0x/vlc-auto-dub.git
+cd vlc-auto-dub
 
 # Make the script executable
 chmod +x run_docker.sh
 
-# Run the dubbing pipeline
-./run_docker.sh /path/to/video.mp4 /path/to/output.wav
+# Build the image and run the pipeline
+./run_docker.sh /path/to/video.mp4 /path/to/output
 ```
+
+The second argument is an output path base. The pipeline writes `<base>_dubbed.wav`, `<base>.srt`, and `<base>_dubbed<ext>` beside it.
 
 ## Project Structure
 
@@ -84,12 +86,12 @@ chmod +x run_docker.sh
 
 #### Docker Method
 ```bash
-./run_docker.sh <input_video> <output_audio>
+./run_docker.sh <input_video> <output_base>
 ```
 
 Example:
 ```bash
-./run_docker.sh ~/Videos/movie.mp4 ~/Music/dubbed_audio.wav
+./run_docker.sh ~/Videos/movie.mp4 ~/Music/dubbed_movie
 ```
 
 #### VLC Integration
@@ -123,6 +125,28 @@ Common issues and solutions:
 - **Permission Denied**: Run `chmod +x run_docker.sh`
 - **Docker Not Running**: Start Docker Desktop
 - **Missing Output**: Ensure write permissions in output directory
+
+## Implemented in repository
+
+- Audio extraction, transcription with faster-whisper, per-segment volume lowering, pyttsx3 speech synthesis, audio mixing and concatenation, and SRT generation, all in `main.py`.
+- A Docker image that installs ffmpeg, espeak, faster-whisper and pyttsx3.
+- A VLC Lua extension that shows a language prompt and launches the pipeline.
+
+## Limitations and unverified behavior
+
+- **No translation.** The pipeline does not translate speech between languages, and there is no translation library or service anywhere in the code. Speech synthesis uses the transcribed text as-is, so the dub stays in the source language.
+- **The VLC extension does not work as shipped.** In `transcribe.vlc.lua`, the launch command hardcodes the placeholder path `/path/to/main.py` and calls the host `python3` directly rather than the Docker script.
+- **The extension's arguments do not match the pipeline.** It passes the entered language as the second argument, but `main.py` treats its second argument as an output path base, so the language never reaches any step.
+- **Subtitle filename mismatch.** The extension looks for `<name>_transcription.srt`, while `main.py` writes `<base>.srt`.
+- **Runtime status is not verified here.** The repository includes no test suite, and the pipeline has not been executed as part of documenting it.
+
+## Roadmap (proposals, not commitments)
+
+These are ideas, not implemented features:
+
+- Add real translation so dubbing can target a language different from the source.
+- Parameterize the extension launch path and align its arguments with the pipeline.
+- Add a test suite.
 
 ## Contributing
 
