@@ -55,6 +55,17 @@ def has_audio_stream(path: str) -> bool:
     return bool(out)
 
 
+def has_video_stream(path: str) -> bool:
+    require_binary("ffprobe")
+    out = _run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v",
+            "-show_entries", "stream=index", "-of", "csv=p=0", path,
+        ]
+    ).stdout.strip()
+    return bool(out)
+
+
 def duration(path: str) -> float:
     require_binary("ffprobe")
     out = _run(

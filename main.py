@@ -69,9 +69,10 @@ def main(argv: list[str] | None = None) -> int:
           + (f", TTS: {summary['providers']['tts']}" if summary["providers"]["tts"] else ""))
     print(f"[autodub] translation: {'yes' if summary['translated'] else 'no'}")
     print(f"[autodub] segments: {summary['segment_count']}")
+    print(f"[autodub] voice: {summary.get('voice') or '(provider default)'}")
     print(f"[autodub] subtitles: {summary['output_srt']}")
     if summary["mode"] == "full":
-        print(f"[autodub] video: {summary['output_video']}")
+        print(f"[autodub] media: {summary['output_media']}")
     for warning in summary["warnings"]:
         print(f"[autodub] warning: {warning}", file=sys.stderr)
     return 0

@@ -31,11 +31,18 @@ class ArgosTranslator:
         if (source, target) in self._ready:
             return
         pkg, tr = self._load()
-        installed = {(l.code) for l in tr.get_installed_languages()}
-        # argostranslate resolves a path; treat a direct installed pair as ready.
+        install_hint = (
+            f"argospm install translate-{source}_{target}  "
+            f"(package: translate-{source}_{target})"
+        )
+
         from argostranslate.translate import get_installed_languages
 
-        for lang in get_installed_languages():
+        try:
+            installed = get_installed_languages()
+        except Exception:  # a partial/corrupt package dir must not crash the scan
+            installed = []
+        for lang in installed:
             if lang.code != source:
                 continue
             if any(t.to_lang.code == target for t in lang.translations_from):
@@ -50,11 +57,14 @@ class ArgosTranslator:
                     return
         except Exception as exc:  # noqa: BLE001
             raise ProviderError(
-                f"argos translation {source}->{target} unavailable and could not "
-                f"be downloaded: {exc}"
+                f"argos has no installed translation for {source!r}->{target!r} and it "
+                f"could not be downloaded ({exc}). Install it once with network access: "
+                f"{install_hint}"
             ) from exc
         raise ProviderError(
-            f"argos has no translation package for {source}->{target}"
+            f"argos has no offline translation package for {source!r}->{target!r}; "
+            f"not every pair exists (try a pivot language such as English). "
+            f"To check/install: {install_hint}"
         )
 
     def translate(self, text: str, source: str, target: str) -> str:

@@ -1,4 +1,10 @@
-"""Pipeline: extract -> STT -> optional translate -> TTS -> fit -> assemble -> mux."""
+"""Pipeline: extract -> STT -> optional translate -> TTS -> fit -> assemble -> mux.
+
+Fully local and content-agnostic: it processes whatever file it is handed, with
+no moderation gate, no upload, and no telemetry. Provider selection decides the
+backends; the defaults never touch the network beyond one-time model/voice
+downloads.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -12,6 +18,7 @@ from .errors import AutoDubError, InputError, MediaError
 from .languages import normalize_code, primary_subtag
 from .providers import make_stt, make_translator, make_tts
 from .subtitles import Cue, write_srt
+from .voices import effective_voice
 
 
 def _sha256(path: str) -> str:
@@ -22,9 +29,13 @@ def _sha256(path: str) -> str:
     return digest.hexdigest()
 
 
-def _resolve_outputs(input_path: str, output_base: str) -> tuple[str, str]:
-    ext = os.path.splitext(input_path)[1] or ".mp4"
-    return f"{output_base}_dubbed{ext}", f"{output_base}.srt"
+def _resolve_outputs(input_path: str, output_base: str, has_video: bool) -> tuple[str, str]:
+    if has_video:
+        ext = os.path.splitext(input_path)[1] or ".mp4"
+        media_out = f"{output_base}_dubbed{ext}"
+    else:
+        media_out = f"{output_base}_dubbed.wav"  # audio-only input stays audio-only
+    return media_out, f"{output_base}.srt"
 
 
 def run(input_path: str, output_base: str, config: Config) -> dict:
@@ -32,14 +43,15 @@ def run(input_path: str, output_base: str, config: Config) -> dict:
     if not os.path.isfile(input_path):
         raise InputError(f"input file not found: {input_path}")
 
-    output_video, output_srt = _resolve_outputs(input_path, output_base)
-    if os.path.abspath(input_path) == os.path.abspath(output_video):
-        raise InputError("output would overwrite the input file; choose a different --output-base")
-
     media.require_binary("ffmpeg")
     media.require_binary("ffprobe")
     if not media.has_audio_stream(input_path):
         raise InputError(f"input has no audio stream: {input_path}")
+    has_video = media.has_video_stream(input_path)
+
+    output_media, output_srt = _resolve_outputs(input_path, output_base, has_video)
+    if os.path.abspath(input_path) == os.path.abspath(output_media):
+        raise InputError("output would overwrite the input file; choose a different --output-base")
 
     source_lang = normalize_code(config.source_lang) if config.source_lang else None
     target_lang = normalize_code(config.target_lang) if config.target_lang else None
@@ -58,16 +70,27 @@ def run(input_path: str, output_base: str, config: Config) -> dict:
 
     stt = make_stt(config.stt)
     translator = make_translator(config.translate) if do_translate else None
-    tts = make_tts(config.tts, config.voice) if not config.subtitle_only else None
+
+    # TTS voice follows the target language (falling back to the source language,
+    # then to the provider default); an explicit --voice always wins.
+    voice, voice_warning = effective_voice(config.tts, target_code or source_code)
+    if config.voice:
+        voice, voice_warning = config.voice, None
+    tts = make_tts(config.tts, voice) if not config.subtitle_only else None
 
     summary: dict = {
         "input": os.path.abspath(input_path),
-        "output_video": os.path.abspath(output_video),
+        "output_video": os.path.abspath(output_media),
+        "output_media": os.path.abspath(output_media),
         "output_srt": os.path.abspath(output_srt),
+        "has_video": has_video,
         "providers": {"stt": config.stt, "tts": None if config.subtitle_only else config.tts},
+        "voice": voice,
         "translated": False,
         "warnings": [],
     }
+    if voice_warning:
+        summary["warnings"].append(voice_warning)
 
     try:
         audio = os.path.join(workdir, "audio.wav")
@@ -102,7 +125,7 @@ def run(input_path: str, output_base: str, config: Config) -> dict:
                 media.slice_audio(audio, cursor, start - cursor, non)
                 parts.append(non)
             raw = os.path.join(workdir, f"seg_{i}.wav")
-            tts.synthesize(text, raw, config.voice)
+            tts.synthesize(text, raw, voice)
             fitted = os.path.join(workdir, f"fit_{i}.wav")
             media.fit_segment(raw, end - start, fitted)
             parts.append(fitted)
@@ -126,7 +149,11 @@ def run(input_path: str, output_base: str, config: Config) -> dict:
                 f"(tolerance {config.duration_tolerance}s)"
             )
 
-        media.mux(input_path, dubbed, output_video)
+        if has_video:
+            media.mux(input_path, dubbed, output_media)
+        else:
+            # audio-only input has no video stream to copy; keep the dubbed audio
+            shutil.copyfile(dubbed, output_media)
 
         input_hash_after = _sha256(input_path)
         if input_hash_after != input_hash_before:
