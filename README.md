@@ -92,6 +92,10 @@ environment variables `AUTODUB_STT`, `AUTODUB_TRANSLATE`, `AUTODUB_TTS`,
   If a pair does not exist, the run fails with a clear message naming the exact
   pair and the install command (`argospm install translate-<src>_<tgt>`) — it
   never silently emits source-language audio as if it were the target.
+- **No-op translation is rejected:** if a requested `src->tgt` pair (with
+  `src != tgt`) returns the source text unchanged for every segment — the
+  failure mode where a pack is not actually loaded — the run aborts with a clear
+  error and writes no output, rather than dubbing source-language audio.
 - **TTS voice follows the target language**: `espeak` uses the language code as
   its voice; `piper` maps a set of languages (en, de, fr, es, it, tr, ru, pt) to
   real voices and falls back to `en_US-lessac-medium` for an unmapped language,
