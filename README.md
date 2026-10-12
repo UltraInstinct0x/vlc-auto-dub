@@ -122,9 +122,12 @@ environment variables `AUTODUB_STT`, `AUTODUB_TRANSLATE`, `AUTODUB_TTS`,
 
 ### Recognition, timing and sound tags
 
-- **STT**: faster-whisper `large-v3` (CPU, int8) with VAD, beam search and word
-  timestamps; `condition_on_previous_text` is off to avoid hallucination loops.
-  `large-v3` is slow on CPU; `--whisper-model large-v3-turbo` is much faster.
+- **STT**: Whisper `large-v3` with word timestamps and
+  `condition_on_previous_text` off (avoids hallucination loops). On Apple
+  Silicon it runs on the GPU via `mlx-whisper` with
+  `hallucination_silence_threshold`; elsewhere faster-whisper on CPU (int8, VAD,
+  beam 5). CPU `large-v3` is slower than real time on a laptop;
+  `--whisper-model large-v3-turbo` is much faster.
 - **Cue timing** is rebuilt from word timestamps: a cue starts at its first word
   and ends ~0.2 s after its last, splitting at pauses and sentence ends, at most
   6 s / ~2 lines per cue. Silence no longer keeps a line on screen.

@@ -3,6 +3,8 @@
 
 # STT (local, CPU) -- default provider "whisper"
 faster-whisper>=1.2
+# Apple Silicon: Whisper on the GPU (CPU large-v3 is slower than real time)
+mlx-whisper>=0.4; platform_system == "Darwin" and platform_machine == "arm64"
 
 # Translation (local, offline) -- default provider "nllb" uses ctranslate2 +
 # tokenizers (installed with faster-whisper); "argos" is the lighter fallback

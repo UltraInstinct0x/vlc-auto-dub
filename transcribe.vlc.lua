@@ -153,7 +153,7 @@ end
 
 local function last_line(text)
     local last = ""
-    for line in text:gmatch("[^\n]+") do
+    for line in text:gmatch("[^\r\n]+") do
         last = line
     end
     return last

@@ -56,14 +56,100 @@ def words_to_cues(words: list[tuple[float, float, str]]) -> list[Segment]:
     return cues
 
 
+def _mlx_available() -> bool:
+    import platform
+    import importlib.util
+
+    return (platform.system() == "Darwin" and platform.machine() == "arm64"
+            and importlib.util.find_spec("mlx_whisper") is not None)
+
+
+def mlx_repo(model_size: str) -> str:
+    """faster-whisper style model name -> mlx-community repo."""
+    if "/" in model_size:
+        return model_size
+    if model_size == "large-v3-turbo":
+        return "mlx-community/whisper-large-v3-turbo"
+    return f"mlx-community/whisper-{model_size}-mlx"
+
+
+class _ProgressBar:
+    """Stands in for tqdm inside mlx_whisper: reports every 5% via progress()."""
+
+    def __init__(self, total=None, **_kwargs):
+        self.total = max(total or 1, 1)
+        self.n = 0
+        self.reported = 0
+
+    def update(self, n=1):
+        self.n += n
+        pct = int(min(self.n / self.total, 1.0) * 100)
+        if pct >= self.reported + 5:
+            self.reported = pct - pct % 5
+            progress(f"transcribing {self.reported}%")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
 class WhisperSTT:
+    """Whisper STT. On Apple Silicon it runs on the GPU via mlx-whisper (CPU
+    large-v3 is slower than real time there); elsewhere faster-whisper on CPU."""
+
     def __init__(self, model_size: str = DEFAULT_MODEL, device: str = "cpu",
-                 compute_type: str = "int8"):
+                 compute_type: str = "int8", backend: str | None = None):
         self.model_size = model_size
         self.device = device
         self.compute_type = compute_type
+        self.backend = backend or ("mlx" if _mlx_available() else "faster-whisper")
         self._model = None
         self.detected_language: str | None = None
+
+    def _transcribe_mlx(self, samples, language: str | None) -> list[Segment]:
+        import sys
+        import types
+
+        import mlx_whisper
+
+        # the package re-exports a *function* named transcribe; get the module
+        mlx_transcribe = sys.modules["mlx_whisper.transcribe"]
+
+        saved = mlx_transcribe.tqdm
+        mlx_transcribe.tqdm = types.SimpleNamespace(tqdm=_ProgressBar)
+        try:
+            result = mlx_whisper.transcribe(
+                samples,
+                path_or_hf_repo=mlx_repo(self.model_size),
+                language=language,
+                verbose=False,
+                word_timestamps=True,
+                condition_on_previous_text=False,
+                # drop hallucinated text in long silences (needs word timestamps)
+                hallucination_silence_threshold=2.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ProviderError(f"whisper (mlx) transcription failed: {exc}") from exc
+        finally:
+            mlx_transcribe.tqdm = saved
+            # free the model (several GB) before translation/tagging load theirs
+            mlx_transcribe.ModelHolder.model = None
+            mlx_transcribe.ModelHolder.model_path = None
+            try:
+                import mlx.core as mx
+                mx.clear_cache()
+            except Exception:  # noqa: BLE001
+                pass
+        self.detected_language = language or result.get("language")
+        words = [
+            (float(w["start"]), float(w["end"]), w["word"])
+            for seg in result.get("segments", [])
+            for w in seg.get("words", [])
+            if w.get("word", "").strip()
+        ]
+        return words_to_cues(words)
 
     def _load(self):
         if self._model is None:
@@ -82,8 +168,10 @@ class WhisperSTT:
     def transcribe(self, audio_path: str, language: str | None) -> list[Segment]:
         from ..media import read_samples
 
-        model = self._load()
         samples = read_samples(audio_path)
+        if self.backend == "mlx":
+            return self._transcribe_mlx(samples, language)
+        model = self._load()
         try:
             seg_iter, info = model.transcribe(
                 samples,

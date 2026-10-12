@@ -170,6 +170,9 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
         progress(f"transcribing ({config.stt}"
                  + (f", {config.whisper_model}" if config.whisper_model else "") + ")")
         raw_segments = stt.transcribe(audio, source_code or None)
+        detected_note = getattr(stt, "detected_language", None)
+        progress(f"transcribed {len(raw_segments)} lines"
+                 + (f" (language: {detected_note})" if detected_note else ""))
         if not source_code and target_code:
             # Source left on auto: translate from whatever the STT detected.
             detected = getattr(stt, "detected_language", None)
@@ -192,6 +195,7 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
                 translated = [translator.translate(t, source_code, target_code) for t in texts]
         else:
             translated = texts
+        translator = None  # free the translation model before sound tagging
         unchanged = sum(1 for a, b in zip(texts, translated) if a.strip() == b.strip()) \
             if do_translate else 0
         segments = [(seg.start, seg.end, text) for seg, text in zip(raw_segments, translated)]
