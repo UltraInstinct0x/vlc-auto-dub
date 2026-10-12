@@ -1,0 +1,28 @@
+"""Deterministic STT fake (no model, no network). Used by unit/e2e tests."""
+from __future__ import annotations
+
+from .base import Segment
+
+
+class FakeSTT:
+    """Return evenly-spaced segments covering the audio duration.
+
+    ``segment_seconds`` controls the slice length; a fixed phrase is used so
+    tests are fully deterministic. This is a test double, never a model.
+    """
+
+    def __init__(self, segment_seconds: float = 2.0, text: str = "fake segment"):
+        self.segment_seconds = segment_seconds
+        self.text = text
+
+    def transcribe(self, audio_path: str, language: str | None) -> list[Segment]:
+        from ..media import duration
+
+        total = duration(audio_path)
+        segments: list[Segment] = []
+        t = 0.0
+        while t < total - 1e-6:
+            end = min(t + self.segment_seconds, total)
+            segments.append(Segment(round(t, 3), round(end, 3), self.text))
+            t = end
+        return segments

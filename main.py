@@ -1,227 +1,81 @@
 #!/usr/bin/env python3
-"""
-This script processes a video file as follows:
-  1. Extracts the audio track from the video.
-  2. Transcribes the audio using faster-whisper to obtain spoken segments (with timestamps).
-  3. For each spoken segment:
-       - Extracts the corresponding audio.
-       - Lowers its volume to dampen the human voice.
-       - Generates TTS audio for the spoken text.
-       - Overlays the TTS audio on the lowered segment.
-  4. Splits the entire audio into chunks (non-spoken and processed spoken segments)
-     and concatenates them into a final dubbed audio file.
-  5. Generates a subtitle file for the transcribed text.
-Usage:
-  python main.py <video_path> <output_audio> <output_subtitle>
-Example:
-  python main.py /app/sample_video.mp4 /app/output_dubbed.wav /app/output_subtitle.srt
-"""
+"""vlc-auto-dub: dub a video's speech into subtitles and an alternate audio track.
 
-import os
-import sys
-import subprocess
+Pipeline: extract audio -> transcribe (STT) -> optional translate -> synthesize
+speech (TTS) -> fit each clip to its time slot -> assemble -> mux.
+
+The original media is never modified.
+"""
+from __future__ import annotations
+
 import argparse
-from datetime import timedelta
-from faster_whisper import WhisperModel
-import pyttsx3
+import sys
 
-def format_timestamp(seconds: float) -> str:
-    """Convert seconds to SRT timestamp format: HH:MM:SS,mmm"""
-    hours = int(seconds // 3600)
-    seconds %= 3600
-    minutes = int(seconds // 60)
-    seconds %= 60
-    milliseconds = int((seconds % 1) * 1000)
-    seconds = int(seconds)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
+from autodub.config import DEFAULT_STT, DEFAULT_TRANSLATE, DEFAULT_TTS, build_config
+from autodub.errors import AutoDubError
+from autodub.pipeline import run
 
-def extract_audio(video_path: str, audio_filename: str):
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i", video_path,
-        "-vn",
-        "-acodec", "pcm_s16le",
-        "-ar", "44100",
-        "-ac", "2",
-        audio_filename
-    ]
-    print("[INFO] Extracting audio...")
-    subprocess.run(cmd, check=True)
-    print(f"[INFO] Audio extracted to {audio_filename}")
 
-def get_audio_duration(audio_filename: str) -> float:
-    cmd = [
-        "ffprobe",
-        "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        audio_filename
-    ]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-    return float(result.stdout.strip())
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="main.py",
+        description="Dub a video's speech into subtitles and an alternate audio track.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("input", help="path to the input video file (never modified)")
+    parser.add_argument(
+        "--output-base", required=True,
+        help="output path base; writes <base>_dubbed<ext> and <base>.srt",
+    )
+    parser.add_argument("--source-lang", default=None,
+                        help="source language code, e.g. en (default: STT auto-detect)")
+    parser.add_argument("--target-lang", default=None,
+                        help="target language code; when it differs from --source-lang, "
+                             "speech and subtitles are translated")
+    parser.add_argument("--stt", default=None, help=f"STT provider (default: {DEFAULT_STT})")
+    parser.add_argument("--translate", default=None,
+                        help=f"translation provider (default: {DEFAULT_TRANSLATE})")
+    parser.add_argument("--tts", default=None, help=f"TTS provider (default: {DEFAULT_TTS})")
+    parser.add_argument("--voice", default=None, help="provider-specific voice name")
+    parser.add_argument("--subtitle-only", action="store_true",
+                        help="write only the SRT; skip TTS and muxing")
+    parser.add_argument("--keep-workdir", action="store_true",
+                        help="keep intermediate files at <output-base>.work")
+    parser.add_argument("--config", default=None, help="path to a config file (key = value or JSON)")
+    return parser
 
-def extract_audio_segment(input_audio: str, start: float, duration: float, output_audio: str):
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i", input_audio,
-        "-ss", str(start),
-        "-t", str(duration),
-        output_audio
-    ]
-    subprocess.run(cmd, check=True)
 
-def lower_audio_volume(input_audio: str, output_audio: str, volume: float=0.2):
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i", input_audio,
-        "-af", f"volume={volume}",
-        output_audio
-    ]
-    subprocess.run(cmd, check=True)
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    config = build_config(
+        config_path=args.config,
+        stt=args.stt,
+        translate=args.translate,
+        tts=args.tts,
+        voice=args.voice,
+        source_lang=args.source_lang,
+        target_lang=args.target_lang,
+        subtitle_only=args.subtitle_only,
+        keep_workdir=args.keep_workdir,
+    )
+    try:
+        summary = run(args.input, args.output_base, config)
+    except AutoDubError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
-def generate_tts(text: str, output_audio: str):
-    engine = pyttsx3.init()
-    engine.save_to_file(text, output_audio)
-    engine.runAndWait()
+    print(f"[autodub] mode: {summary['mode']}")
+    print(f"[autodub] STT: {summary['providers']['stt']}"
+          + (f", TTS: {summary['providers']['tts']}" if summary["providers"]["tts"] else ""))
+    print(f"[autodub] translation: {'yes' if summary['translated'] else 'no'}")
+    print(f"[autodub] segments: {summary['segment_count']}")
+    print(f"[autodub] subtitles: {summary['output_srt']}")
+    if summary["mode"] == "full":
+        print(f"[autodub] video: {summary['output_video']}")
+    for warning in summary["warnings"]:
+        print(f"[autodub] warning: {warning}", file=sys.stderr)
+    return 0
 
-def overlay_audio(fg_audio: str, bg_audio: str, output_audio: str):
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i", bg_audio,
-        "-i", fg_audio,
-        "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2",
-        output_audio
-    ]
-    subprocess.run(cmd, check=True)
-
-def concatenate_audios(audio_files: list, output_audio: str):
-    list_filename = "concat_list.txt"
-    with open(list_filename, "w") as f:
-        for audio in audio_files:
-            f.write(f"file '{os.path.abspath(audio)}'\n")
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", list_filename,
-        "-c", "copy",
-        output_audio
-    ]
-    subprocess.run(cmd, check=True)
-    os.remove(list_filename)
-
-def process_spoken_segment(full_audio: str, segment, index: int) -> str:
-    seg_start = segment.start
-    seg_duration = segment.end - segment.start
-
-    seg_orig = f"seg_{index}_orig.wav"
-    seg_lower = f"seg_{index}_lower.wav"
-    seg_tts = f"seg_{index}_tts.wav"
-    seg_final = f"seg_{index}_final.wav"
-
-    print(f"[INFO] Processing spoken segment {index}: start={seg_start:.2f}, duration={seg_duration:.2f}")
-
-    extract_audio_segment(full_audio, seg_start, seg_duration, seg_orig)
-    lower_audio_volume(seg_orig, seg_lower, volume=0.2)
-    generate_tts(segment.text, seg_tts)
-    overlay_audio(seg_tts, seg_lower, seg_final)
-
-    for fname in [seg_orig, seg_lower, seg_tts]:
-        if os.path.exists(fname):
-            os.remove(fname)
-
-    return seg_final
-
-def generate_subtitle(segments, subtitle_path):
-    """Generate SRT subtitle file from transcription segments"""
-    with open(subtitle_path, 'w', encoding='utf-8') as f:
-        for i, segment in enumerate(segments, 1):
-            f.write(f"{i}\n")
-            f.write(f"{format_timestamp(segment.start)} --> {format_timestamp(segment.end)}\n")
-            f.write(f"{segment.text}\n\n")
-
-def create_final_video(input_video: str, dubbed_audio: str, output_video: str):
-    """Create final video with dubbed audio track"""
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i", input_video,      # Original video
-        "-i", dubbed_audio,     # Dubbed audio
-        "-map", "0:v",         # Use video from first input
-        "-map", "1:a",         # Use audio from second input
-        "-c:v", "copy",        # Copy video codec
-        "-shortest",           # Match shortest stream length
-        output_video
-    ]
-    print("[INFO] Creating final video with dubbed audio...")
-    subprocess.run(cmd, check=True)
-    print(f"[INFO] Final video saved as {output_video}")
-
-def transcribe_and_dub(video_path: str, output_path: str):
-    base, ext = os.path.splitext(output_path)
-    output_audio = f"{base}_dubbed.wav"
-    output_subtitle = f"{base}.srt"
-    output_video = f"{base}_dubbed{ext}"
-
-    extract_audio(video_path, output_audio)
-    total_duration = get_audio_duration(output_audio)
-    print(f"[INFO] Audio duration: {total_duration:.2f} seconds")
-
-    print("[INFO] Running transcription with faster-whisper...")
-    model_size = "base"
-    model = WhisperModel(model_size, device="cpu")
-    segments, info = model.transcribe(video_path, beam_size=5)
-    print("[INFO] Transcription complete.")
-
-    processed_chunks = []
-    current_time = 0.0
-    seg_index = 0
-
-    for segment in segments:
-        if segment.start > current_time:
-            non_speech = f"chunk_{seg_index}_nonspeech.wav"
-            duration = segment.start - current_time
-            extract_audio_segment(output_audio, current_time, duration, non_speech)
-            processed_chunks.append(non_speech)
-            seg_index += 1
-
-        processed_segment = process_spoken_segment(output_audio, segment, seg_index)
-        processed_chunks.append(processed_segment)
-        seg_index += 1
-
-        current_time = segment.end
-
-    if current_time < total_duration:
-        non_speech = f"chunk_{seg_index}_nonspeech.wav"
-        duration = total_duration - current_time
-        extract_audio_segment(output_audio, current_time, duration, non_speech)
-        processed_chunks.append(non_speech)
-
-    print("[INFO] Concatenating audio chunks...")
-    concatenate_audios(processed_chunks, output_audio)
-    print(f"[INFO] Final dubbed audio saved as {output_audio}")
-
-    transcription = [{"start": seg.start, "end": seg.end, "text": seg.text} for seg in segments]
-    generate_subtitle(transcription, output_subtitle)
-    print(f"[INFO] Subtitle file saved as {output_subtitle}")
-
-    create_final_video(video_path, output_audio, output_video)
-
-    for chunk in processed_chunks:
-        if os.path.exists(chunk):
-            os.remove(chunk)
-    if os.path.exists(output_audio):
-        os.remove(output_audio)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Create dubbed video with subtitles")
-    parser.add_argument("video", help="Path to the input video file")
-    parser.add_argument("output", help="Path to the output video file (without extension)")
-    args = parser.parse_args()
-
-    transcribe_and_dub(args.video, args.output)
+    raise SystemExit(main())

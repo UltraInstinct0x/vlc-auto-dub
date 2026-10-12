@@ -1,0 +1,14 @@
+# Runtime dependencies for the local dubbing pipeline.
+# ffmpeg / ffprobe are system programs (see README), not pip packages.
+
+# STT (local, CPU) -- default provider "whisper"
+faster-whisper>=1.2
+
+# Translation (local, offline) -- default provider "argos"
+argostranslate>=1.11
+
+# TTS (local, CPU) -- default provider "piper"
+piper-tts>=1.8
+
+# Test runner
+pytest>=8
