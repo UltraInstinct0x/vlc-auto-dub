@@ -89,9 +89,11 @@ python main.py v.mp4 --output-base v --stt whisper --translate argos \
 | `--source-lang` | source language code, e.g. `en` | STT auto-detect |
 | `--target-lang` | target language; when it differs from the source, translate | off |
 | `--stt` | STT provider: `whisper`, `fake` | `whisper` |
-| `--translate` | translation provider: `argos`, `http`, `fake` | `argos` |
+| `--translate` | translation provider: `nllb`, `argos`, `http`, `fake` | `nllb` |
 | `--tts` | TTS provider: `piper`, `espeak`, `fake` | `piper` |
 | `--voice` | provider-specific voice name | provider default |
+| `--whisper-model` | faster-whisper model (`large-v3`, `large-v3-turbo`, `medium`, ...) | `large-v3` |
+| `--no-sound-tags` | no `[laughter]`/`[music]`/`[train]`... tags in subtitles | tags on |
 | `--subtitle-only` | subtitles only, no dub | off |
 | `--dub-only` | dub only, no subtitles | off |
 | `--keep-workdir` | keep intermediates at `BASE.work` | off |
@@ -117,6 +119,21 @@ environment variables `AUTODUB_STT`, `AUTODUB_TRANSLATE`, `AUTODUB_TTS`,
   verified (stream counts, labelled tracks, duration), and only then renamed
   over the original in one atomic step. Any failure before that leaves the
   original byte-for-byte untouched and removes the temp file.
+
+### Recognition, timing and sound tags
+
+- **STT**: faster-whisper `large-v3` (CPU, int8) with VAD, beam search and word
+  timestamps; `condition_on_previous_text` is off to avoid hallucination loops.
+  `large-v3` is slow on CPU; `--whisper-model large-v3-turbo` is much faster.
+- **Cue timing** is rebuilt from word timestamps: a cue starts at its first word
+  and ends ~0.2 s after its last, splitting at pauses and sentence ends, at most
+  6 s / ~2 lines per cue. Silence no longer keeps a line on screen.
+- **Translation**: NLLB-200 distilled 1.3B (CTranslate2, int8, ~1.4 GB one-time
+  download, model licence CC-BY-NC 4.0). Argos remains as `--translate argos`.
+- **Sound tags**: an AudioSet classifier (MIT AST) listens to the gaps between
+  speech and writes tags such as `[laughter]`, `[screaming]`, `[crying]`,
+  `[moaning]`, `[heavy breathing]`, `[music]`, `[train]`, `[siren]` (in Turkish
+  for `tr`: `[kahkaha]`, `[çığlık]`, ...). Tags are subtitles only, never dubbed.
 
 ### Languages and voices
 

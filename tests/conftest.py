@@ -56,6 +56,12 @@ def make_speech_video(path: str, text: str = "hello world", duration: float = 3.
     return path
 
 
+@pytest.fixture(autouse=True)
+def _no_sound_tags(monkeypatch):
+    """Keep tests offline: the sound-tag model is exercised by its own tests."""
+    monkeypatch.setenv("AUTODUB_SOUND_TAGS", "0")
+
+
 @pytest.fixture(scope="session")
 def tone_video(tmp_path_factory) -> str:
     if not HAVE_FFMPEG:

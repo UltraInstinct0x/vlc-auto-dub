@@ -7,12 +7,13 @@ from .stt_whisper import WhisperSTT
 from .translate_argos import ArgosTranslator
 from .translate_fake import FakeTranslator
 from .translate_http import HttpTranslator
+from .translate_nllb import NllbTranslator
 from .tts_espeak import EspeakTTS
 from .tts_fake import FakeTTS
 from .tts_piper import PiperTTS
 
 STT_PROVIDERS = {"whisper": WhisperSTT, "fake": FakeSTT}
-TRANSLATE_PROVIDERS = {"argos": ArgosTranslator, "http": HttpTranslator, "fake": FakeTranslator}
+TRANSLATE_PROVIDERS = {"nllb": NllbTranslator, "argos": ArgosTranslator, "http": HttpTranslator, "fake": FakeTranslator}
 TTS_PROVIDERS = {"piper": PiperTTS, "espeak": EspeakTTS, "fake": FakeTTS}
 
 
@@ -23,7 +24,9 @@ def _make(registry: dict, name: str, kind: str, **kwargs):
     return registry[name](**kwargs)
 
 
-def make_stt(name: str):
+def make_stt(name: str, model: str | None = None):
+    if name == "whisper" and model:
+        return _make(STT_PROVIDERS, name, "STT", model_size=model)
     return _make(STT_PROVIDERS, name, "STT")
 
 

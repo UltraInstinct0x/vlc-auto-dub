@@ -135,7 +135,7 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
     if config.subtitle_only and config.dub_only:
         raise InputError("--subtitle-only and --dub-only cannot be combined")
 
-    stt = make_stt(config.stt)
+    stt = make_stt(config.stt, config.whisper_model)
 
     # TTS voice follows the target language (falling back to the source language,
     # then to the provider default); an explicit --voice always wins.
@@ -178,16 +178,17 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
             do_translate = bool(source_code and source_code != target_code)
         translator = make_translator(config.translate) if do_translate else None
 
-        segments = []
-        unchanged = 0
-        for seg in raw_segments:
-            text = seg.text
-            if do_translate and translator is not None:
-                translated = translator.translate(text, source_code, target_code)
-                if translated.strip() == text.strip():
-                    unchanged += 1
-                text = translated
-            segments.append((seg.start, seg.end, text))
+        texts = [seg.text for seg in raw_segments]
+        if do_translate and translator is not None:
+            if hasattr(translator, "translate_batch"):
+                translated = translator.translate_batch(texts, source_code, target_code)
+            else:
+                translated = [translator.translate(t, source_code, target_code) for t in texts]
+        else:
+            translated = texts
+        unchanged = sum(1 for a, b in zip(texts, translated) if a.strip() == b.strip()) \
+            if do_translate else 0
+        segments = [(seg.start, seg.end, text) for seg, text in zip(raw_segments, translated)]
 
         # Guard against the dangerous silent failure: a "translation" step that
         # returns the source text verbatim for every segment means the pack is
@@ -203,7 +204,17 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
         summary["translated"] = do_translate and bool(segments)
         summary["segment_count"] = len(segments)
 
-        cues = [Cue(start=s, end=e, text=t) for (s, e, t) in segments]
+        cue_items = list(segments)
+        summary["sound_tags"] = 0
+        if config.sound_tags and not config.dub_only:
+            from .sound_events import SoundTagger
+
+            tags = SoundTagger().tag(media.read_samples(audio), list(raw_segments),
+                                     target_code or source_code or None)
+            summary["sound_tags"] = len(tags)
+            cue_items += [(t.start, t.end, t.text) for t in tags]
+            cue_items.sort(key=lambda c: c[0])
+        cues = [Cue(start=s, end=e, text=t) for (s, e, t) in cue_items]
         if config.dub_only:
             srt_path = None
             summary["output_srt"] = None

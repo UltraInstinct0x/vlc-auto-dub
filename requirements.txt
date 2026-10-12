@@ -4,8 +4,12 @@
 # STT (local, CPU) -- default provider "whisper"
 faster-whisper>=1.2
 
-# Translation (local, offline) -- default provider "argos"
+# Translation (local, offline) -- default provider "nllb" uses ctranslate2 +
+# tokenizers (installed with faster-whisper); "argos" is the lighter fallback
 argostranslate>=1.11
+
+# Sound tags ([laughter], [music], ...) -- AudioSet classifier (torch comes with argos)
+transformers>=4.40
 
 # TTS (local, CPU) -- default provider "piper"
 piper-tts>=1.8

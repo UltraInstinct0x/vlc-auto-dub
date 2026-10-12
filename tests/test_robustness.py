@@ -67,7 +67,7 @@ def test_non_ascii_source_text(tone_video, tmp_path, monkeypatch):
     from autodub.providers.stt_fake import FakeSTT
 
     unicode_text = "çğıöşü ÇĞİÖŞÜ — 日本語のテスト — Ω≈ç√"
-    monkeypatch.setattr(pipeline, "make_stt", lambda name: FakeSTT(text=unicode_text))
+    monkeypatch.setattr(pipeline, "make_stt", lambda name, model=None: FakeSTT(text=unicode_text))
     base = str(tmp_path / "out")
     summary = run(tone_video, base, _fake_cfg(source_lang="en"))
     content = open(summary["output_srt"], encoding="utf-8").read()

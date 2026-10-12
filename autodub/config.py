@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 # Defaults are documented in README/design.md.
 DEFAULT_STT = "whisper"
-DEFAULT_TRANSLATE = "argos"
+DEFAULT_TRANSLATE = "nllb"
 DEFAULT_TTS = "piper"
 # Assembled audio may differ from the source by at most this many seconds.
 DEFAULT_DURATION_TOLERANCE = 0.5
@@ -30,6 +30,8 @@ class Config:
     keep_workdir: bool = False
     in_place: bool = False
     dub_only: bool = False
+    whisper_model: str | None = None
+    sound_tags: bool = True
     duration_tolerance: float = DEFAULT_DURATION_TOLERANCE
 
 
@@ -62,6 +64,8 @@ def build_config(
     keep_workdir: bool = False,
     in_place: bool = False,
     dub_only: bool = False,
+    whisper_model: str | None = None,
+    sound_tags: bool | None = None,
 ) -> Config:
     data: dict = {}
     if config_path:
@@ -85,4 +89,7 @@ def build_config(
         keep_workdir=keep_workdir,
         in_place=in_place,
         dub_only=dub_only,
+        whisper_model=pick(whisper_model, "whisper_model", "AUTODUB_WHISPER_MODEL", None),
+        sound_tags=str(pick(sound_tags, "sound_tags", "AUTODUB_SOUND_TAGS", True)).lower()
+        not in ("0", "false", "no", "off"),
     )

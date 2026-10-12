@@ -45,9 +45,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--translate", default=None,
                         help=f"translation provider (default: {DEFAULT_TRANSLATE})")
     parser.add_argument("--tts", default=None, help=f"TTS provider (default: {DEFAULT_TTS})")
+    parser.add_argument("--whisper-model", default=None,
+                        help="faster-whisper model: large-v3 (default), large-v3-turbo, "
+                             "medium, small, ...")
     parser.add_argument("--voice", default=None, help="provider-specific voice name")
     parser.add_argument("--subtitle-only", action="store_true",
                         help="write only the SRT; skip TTS and muxing")
+    parser.add_argument("--no-sound-tags", action="store_true",
+                        help="don't add [laughter], [music], [train]... tags to the subtitles")
     parser.add_argument("--dub-only", action="store_true",
                         help="produce only the dubbed audio; no subtitles")
     parser.add_argument("--keep-workdir", action="store_true",
@@ -75,6 +80,8 @@ def main(argv: list[str] | None = None) -> int:
         keep_workdir=args.keep_workdir,
         in_place=args.in_place,
         dub_only=args.dub_only,
+        whisper_model=args.whisper_model,
+        sound_tags=False if args.no_sound_tags else None,
     )
     try:
         summary = run(args.input, args.output_base, config)
@@ -89,6 +96,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[autodub] detected source language: {summary['detected_language']}")
     print(f"[autodub] translation: {'yes' if summary['translated'] else 'no'}")
     print(f"[autodub] segments: {summary['segment_count']}")
+    if summary.get("sound_tags"):
+        print(f"[autodub] sound tags: {summary['sound_tags']}")
     print(f"[autodub] voice: {summary.get('voice') or '(provider default)'}")
     if summary["in_place"]:
         if summary["mode"] == "subtitle-only":

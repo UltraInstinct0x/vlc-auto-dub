@@ -26,7 +26,8 @@ _HAS_ESPEAK = shutil.which("espeak-ng") is not None
 @pytest.mark.skipif(not _HAS_WHISPER, reason="faster-whisper not installed")
 def test_real_stt_then_real_tts(speech_video, tmp_path):
     base = str(tmp_path / "real")
-    cfg = build_config(stt="whisper", tts="espeak", source_lang="en")
+    cfg = build_config(stt="whisper", tts="espeak", source_lang="en",
+                       whisper_model="tiny")  # real model, kept small for test speed
     before = hashlib.sha256(open(speech_video, "rb").read()).hexdigest()
 
     summary = run(speech_video, base, cfg)

@@ -84,7 +84,7 @@ end
 
 -- Build the CLI argument list (everything after "<python> <script>").
 -- Mirrored by tests/test_vlc_invocation.py; keep the two in sync.
-function build_args(video, source, target, mode, in_place)
+function build_args(video, source, target, mode, in_place, sound_tags)
     local args = { video }
     if in_place then
         table.insert(args, "--in-place")
@@ -104,6 +104,9 @@ function build_args(video, source, target, mode, in_place)
         table.insert(args, "--dub-only")
     elseif mode == "subs" then
         table.insert(args, "--subtitle-only")
+    end
+    if sound_tags == false and mode ~= "dub" then
+        table.insert(args, "--no-sound-tags")
     end
     return args
 end
@@ -174,10 +177,10 @@ local function show_status_dialog(message)
     dlg:show()
 end
 
-local function start_job(video, uri, python, script, source, target, mode, in_place)
+local function start_job(video, uri, python, script, source, target, mode, in_place, sound_tags)
     local log = strip_extension(video) .. ".autodub.log"
     local parts = { shquote(python), shquote(script) }
-    for _, arg in ipairs(build_args(video, source, target, mode, in_place)) do
+    for _, arg in ipairs(build_args(video, source, target, mode, in_place, sound_tags)) do
         table.insert(parts, shquote(arg))
     end
     -- Run in the background so VLC's UI thread is not blocked; the exit code is
@@ -225,15 +228,18 @@ local function show_settings_dialog(video, uri, python, script)
     if not can_in_place then
         dlg:add_label("(only .mp4/.m4v/.mov/.mkv can take tracks in place)", 1, 5, 3, 1)
     end
+    local tags_cb = dlg:add_check_box(
+        "Sound tags in subtitles: [laughter] [screaming] [music] [train] ...", true, 1, 6, 3, 1)
 
     dlg:add_button("Start", function()
         local source = sources[source_dd:get_value()] or "auto"
         local target = targets[target_dd:get_value()] or "same"
         local mode = (MODES[mode_dd:get_value()] or MODES[1])[1]
         local in_place = can_in_place and in_place_cb:get_checked()
-        start_job(video, uri, python, script, source, target, mode, in_place)
-    end, 1, 6, 1, 1)
-    dlg:add_button("Cancel", close_dialog, 2, 6, 1, 1)
+        start_job(video, uri, python, script, source, target, mode, in_place,
+            tags_cb:get_checked())
+    end, 1, 7, 1, 1)
+    dlg:add_button("Cancel", close_dialog, 2, 7, 1, 1)
     dlg:show()
 end
 
