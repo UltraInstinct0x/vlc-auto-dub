@@ -25,15 +25,17 @@ pytestmark = pytest.mark.skipif(LUA is None, reason="lua/luajit required")
 
 
 def lua_args(video: str, source: str, target: str, mode: str, in_place: bool,
-             sound_tags: bool = True) -> list[str]:
+             sound_tags: bool = True, use_embedded: bool = False) -> list[str]:
     """Run the extension's own build_args() and return the argv it builds."""
     script = (
         f"dofile({os.path.join(ROOT, 'transcribe.vlc.lua')!r})\n"
-        "local a = build_args(arg[1], arg[2], arg[3], arg[4], arg[5] == 'true', arg[6] == 'true')\n"
+        "local a = build_args(arg[1], arg[2], arg[3], arg[4], arg[5] == 'true', arg[6] == 'true',\n"
+        "                     arg[7] == 'true')\n"
         "io.write(table.concat(a, '\\0'))\n"
     )
     out = subprocess.run([LUA, "-", video, source, target, mode,
-                          "true" if in_place else "false", "true" if sound_tags else "false"],
+                          "true" if in_place else "false", "true" if sound_tags else "false",
+                          "true" if use_embedded else "false"],
                          input=script, check=True, capture_output=True, text=True).stdout
     return out.split("\0")
 
@@ -47,7 +49,10 @@ def test_argv_shapes():
         v, "--output-base", "/movies/my clip", "--source-lang", "en", "--subtitle-only"]
     assert lua_args(v, "en", "tr", "subs", True, sound_tags=False)[-1] == "--no-sound-tags"
     assert "--no-sound-tags" not in lua_args(v, "en", "tr", "dub", True, sound_tags=False)
-    for argv in (lua_args(v, "auto", "tr", "both", True), lua_args(v, "en", "de", "subs", False)):
+    assert lua_args(v, "en", "tr", "both", True, use_embedded=True)[-1] == "--use-embedded-subs"
+    assert "--use-embedded-subs" not in lua_args(v, "en", "tr", "both", True)
+    for argv in (lua_args(v, "auto", "tr", "both", True), lua_args(v, "en", "de", "subs", False),
+                 lua_args(v, "auto", "tr", "both", True, use_embedded=True)):
         cli.build_parser().parse_args(argv)  # every shape parses
 
 

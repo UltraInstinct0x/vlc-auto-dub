@@ -56,6 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="don't add [laughter], [music], [train]... tags to the subtitles")
     parser.add_argument("--dub-only", action="store_true",
                         help="produce only the dubbed audio; no subtitles")
+    parser.add_argument("--use-embedded-subs", action="store_true",
+                        help="dub from a text subtitle track already in the file instead of "
+                             "transcribing the audio (much faster); falls back to transcription "
+                             "when there is none")
     parser.add_argument("--keep-workdir", action="store_true",
                         help="keep intermediate files at <output-base>.work")
     parser.add_argument("--config", default=None, help="path to a config file (key = value or JSON)")
@@ -83,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         dub_only=args.dub_only,
         whisper_model=args.whisper_model,
         sound_tags=False if args.no_sound_tags else None,
+        use_embedded_subs=args.use_embedded_subs,
     )
     try:
         summary = run(args.input, args.output_base, config)
