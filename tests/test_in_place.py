@@ -20,6 +20,7 @@ from autodub.errors import InputError, MediaError
 from autodub.pipeline import run
 
 import main as cli
+from conftest import make_tone_video
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg required")
 
@@ -144,7 +145,16 @@ def test_default_mode_still_writes_sidecars_and_keeps_input(tone_video, tmp_path
     summary = run(tone_video, base, build_config(source_lang="en", target_lang="tr", **FAKES))
     assert _sha(tone_video) == before
     assert os.path.exists(summary["output_media"])
-    assert os.path.exists(summary["output_srt"])
+    assert os.path.exists(summary["output_srt"])          # unchanged default
+    assert summary["subtitles_embedded"] is True           # and inside the copy too
+
+
+def test_no_srt_leaves_only_the_self_contained_copy(tone_video, tmp_path):
+    base = str(tmp_path / "out")
+    summary = run(tone_video, base, build_config(source_lang="en", target_lang="tr",
+                                                 write_srt=False, **FAKES))
+    assert summary["subtitles_embedded"] is True and summary["output_srt"] is None
+    assert not os.path.exists(base + ".srt")
 
 
 def test_dub_only_sidecar_mode_writes_no_srt(tone_video, tmp_path):
@@ -177,3 +187,36 @@ def test_ffmpeg_found_with_minimal_gui_path(video, tmp_path):
         env=env, capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+# --- no language chosen (auto-detect, no translation) -----------------------
+
+@pytest.mark.parametrize("ext", ["mkv", "mp4"])
+def test_tracks_are_tagged_with_the_detected_language(tmp_path, ext):
+    """Used to tag 'und' and, for MKV, fail: Matroska drops an 'und' tag."""
+    video = make_tone_video(str(tmp_path / f"clip.{ext}"))
+    summary = run(video, None, build_config(in_place=True, **FAKES))   # no languages
+    assert summary["detected_language"] == "en" and summary["translated"] is False
+    ours = [s for s in media.probe_streams(video) if media.is_autodub_stream(s)]
+    assert sorted(s["codec_type"] for s in ours) == ["audio", "subtitle"]
+    assert {media.stream_language(s) for s in ours} == {"eng"}
+
+
+def test_undetected_language_still_works_on_mkv(tmp_path, monkeypatch):
+    """Nothing detected: the tracks stay 'und', which Matroska stores as no tag."""
+    import autodub.pipeline as pipeline
+    from autodub.providers.stt_fake import FakeSTT
+
+    class SilentDetector(FakeSTT):
+        def transcribe(self, audio_path, language):
+            segments = super().transcribe(audio_path, language)
+            self.detected_language = None
+            return segments
+
+    monkeypatch.setattr(pipeline, "make_stt", lambda name, model=None: SilentDetector())
+    video = make_tone_video(str(tmp_path / "clip.mkv"))
+    for _ in range(2):          # re-running replaces the earlier 'und' tracks
+        summary = run(video, None, build_config(in_place=True, **FAKES))
+        assert summary["track_language"] == "und"
+    ours = [s for s in media.probe_streams(video) if media.is_autodub_stream(s)]
+    assert sorted(s["codec_type"] for s in ours) == ["audio", "subtitle"]

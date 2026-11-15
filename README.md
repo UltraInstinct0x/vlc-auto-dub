@@ -31,7 +31,8 @@ language pair the local backends support. No API key is required.
 - **Language-general**: `--source-lang`/`--target-lang` accept arbitrary
   ISO-style codes the local backends support. Missing argos packs install on
   demand; the TTS voice follows the target language.
-- **Subtitles**: writes an UTF-8 `.srt` next to the dubbed media.
+- **Subtitles**: a subtitle track inside the dubbed media, plus an UTF-8 `.srt`
+  (skip it with `--no-srt`).
 - **Handles real inputs**: video or audio-only files, any container ffmpeg
   reads, paths with spaces/non-ASCII characters, and non-ASCII source text.
 
@@ -49,7 +50,14 @@ language pair the local backends support. No API key is required.
 python main.py INPUT --output-base BASE [options]
 ```
 
-Writes `<BASE>_dubbed<ext>` (dubbed video) and `<BASE>.srt` (subtitles).
+Writes `<BASE>_dubbed<ext>`: every original track (audio, subtitles, chapters),
+plus the dub as the default audio track and the new subtitles as the default
+subtitle track, like `--in-place` but in a copy, and the subtitles also as
+`<BASE>.srt`. `--no-srt` skips the `.srt` when the subtitles are inside the copy;
+it is still written when they cannot go inside: `--subtitle-only`, audio-only
+input (`<BASE>_dubbed.wav`), containers other than MP4/M4V/MOV/MKV, or a
+container that cannot carry some original track (that copy falls back to the
+video plus the dub, with a warning).
 
 ```bash
 python main.py INPUT --in-place [options]
@@ -74,6 +82,12 @@ python main.py movie.mkv --in-place --target-lang tr
 # Dub track only, no subtitles
 python main.py movie.mp4 --in-place --source-lang en --target-lang de --dub-only
 
+# Skip transcription: dub from the file's own subtitle track (much faster)
+python main.py movie.mkv --in-place --target-lang tr --use-embedded-subs
+
+# Voice-over: keep the original voices audible under the dub
+python main.py movie.mkv --in-place --target-lang tr --original-volume 0.3
+
 # Choose providers / voice explicitly
 python main.py v.mp4 --output-base v --stt whisper --translate argos \
     --tts piper --voice en_US-lessac-medium
@@ -84,7 +98,8 @@ python main.py v.mp4 --output-base v --stt whisper --translate argos \
 | Option | Description | Default |
 |---|---|---|
 | `INPUT` | input video file (never modified) | required |
-| `--output-base BASE` | writes `BASE_dubbed<ext>` and `BASE.srt` | required unless `--in-place` |
+| `--output-base BASE` | writes `BASE_dubbed<ext>` and `BASE.srt` (see above) | required unless `--in-place` |
+| `--no-srt` | no `BASE.srt` when the subtitles are inside the dubbed copy | off |
 | `--in-place` | add the tracks inside `INPUT` (see below) | off |
 | `--source-lang` | source language code, e.g. `en` | STT auto-detect |
 | `--target-lang` | target language; when it differs from the source, translate | off |
@@ -95,6 +110,9 @@ python main.py v.mp4 --output-base v --stt whisper --translate argos \
 | `--whisper-model` | faster-whisper model (`large-v3`, `large-v3-turbo`, `medium`, ...) | `large-v3` |
 | `--no-sound-tags` | no `[laughter]`/`[music]`/`[train]`... tags in subtitles | tags on |
 | `--subtitle-only` | subtitles only, no dub | off |
+| `--original-volume` | keep the original speech under the dub at this gain, 0–1 (voice-over) | `0` (dub replaces it) |
+| `--dub-volume` | dub loudness as a linear gain, 0–3 | `1.0` |
+| `--use-embedded-subs` | dub from a text subtitle track in the file instead of transcribing (see below) | off |
 | `--dub-only` | dub only, no subtitles | off |
 | `--keep-workdir` | keep intermediates at `BASE.work` | off |
 | `--config FILE` | config file (`key = value` or JSON) | none |
@@ -119,6 +137,43 @@ environment variables `AUTODUB_STT`, `AUTODUB_TRANSLATE`, `AUTODUB_TTS`,
   verified (stream counts, labelled tracks, duration), and only then renamed
   over the original in one atomic step. Any failure before that leaves the
   original byte-for-byte untouched and removes the temp file.
+
+### `--use-embedded-subs`
+
+Transcription is the slowest stage. When the file already carries a **text**
+subtitle track (SubRip, ASS/SSA, mov_text, WebVTT), its cues give the lines and
+their timing, so the dub is built from them and STT is skipped entirely
+(the sample video: ~12 s instead of ~2 min).
+
+- **Track choice**: a track already in `--target-lang` (no translation needed),
+  then one in `--source-lang`, then any. Full tracks beat SDH/hearing-impaired
+  ones, and the default track beats the rest. **Forced** tracks and AutoDub
+  tracks from an earlier `--in-place` run are never used. Bitmap tracks (PGS,
+  VobSub, DVB) hold pictures, not text, and are ignored.
+- **Language**: translation runs from the track's language tag, and the TTS
+  voice follows it. An untagged track is used only when `--source-lang` is set
+  or no translation is requested.
+- **Cleaning**: styling (`<i>`, `{\an8}`) and non-speech lines (`[door slams]`,
+  `(laughs)`, `♪`) are removed so they are not spoken; overlapping cues are
+  merged or trimmed into a non-overlapping timeline.
+- **Fallback**: no usable track, an untagged track when the translation source
+  is unknown, or a track with no speakable text → the audio is transcribed as
+  usual and a warning says why.
+
+### Voice-over mix: `--original-volume`, `--dub-volume`
+
+By default the dub **replaces** the speech: the original audio is only kept in
+the gaps between lines. With one synthetic voice for everyone, that makes it
+hard to tell who is talking. `--original-volume 0.3` keeps the original speech
+underneath at 30%, documentary voice-over style, so each speaker's voice, tone
+and timing still come through. `--dub-volume` scales the dub itself (`0.75`
+softer, `1.5` louder).
+
+- Only the speech slots are mixed; the gaps keep the original at full level.
+- A limiter stops the sum from clipping (it does not auto-level quiet parts).
+- Both also read from the config file (`original_volume`, `dub_volume`) and the
+  environment (`AUTODUB_ORIGINAL_VOLUME`, `AUTODUB_DUB_VOLUME`).
+- VLC plays one audio track at a time, so the mix is baked into the dub track.
 
 ### Recognition, timing and sound tags
 
@@ -198,8 +253,16 @@ are sent.
 - **Spoken language**: Auto-detect or a fixed language.
 - **Translate to**: a target language, or no translation.
 - **Produce**: Dub + subtitles, Dub only, or Subtitles only.
+- **Use the video's own subtitles if it has them** (on by default): runs
+  `--use-embedded-subs`, skipping transcription when a text subtitle track
+  exists.
+- **Original voices** (Off / 15% / 30% / 50%) and **Dub volume**: run
+  `--original-volume` / `--dub-volume`. Preselect your usual levels with
+  `original_volume` / `dub_volume` in the config below.
 - **Add tracks into this file** (on by default for MP4/M4V/MOV/MKV): runs
-  `--in-place`. Untick it to write `<base>_dubbed<ext>` / `<base>.srt` instead.
+  `--in-place`. Untick it to write a dubbed copy, `<base>_dubbed<ext>`, instead
+  (with `--no-srt`: the subtitles are inside it); **Reopen video** then plays
+  the copy.
 
 The job runs in the background (log: `<base>.autodub.log`). **Check status**
 reads the log; **Reopen video** reloads the rewritten file at the current
@@ -215,6 +278,8 @@ It has **no hardcoded path**. Configure once in
 return {
   python = "/usr/bin/python3",
   script = "/absolute/path/to/vlc-auto-dub/main.py",
+  original_volume = 0.3,  -- optional: preselect "Original voices"
+  dub_volume = 1.0,       -- optional: preselect "Dub volume"
 }
 ```
 
