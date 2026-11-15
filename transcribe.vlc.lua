@@ -22,7 +22,7 @@
 function descriptor()
     return {
         title = "Auto-Dub (vlc-auto-dub)",
-        version = "3.2",
+        version = "3.3",
         author = "vlc-auto-dub",
         shortdesc = "Dub and/or subtitle the current video",
         capabilities = { "menu" }
@@ -218,24 +218,33 @@ local function to_uri(path)
 end
 
 -- What "Reopen video" should play: the MRL and extra item options.
--- In place, the original file now holds the new tracks. Otherwise the dub is
--- a separate copy beside it, and its subtitles have a different base name, so
--- VLC would not pick them up by itself.
+-- In place, the original file now holds the new tracks. Otherwise the dub is a
+-- separate copy beside it. An .mp4/.m4v/.mov/.mkv copy carries the new
+-- subtitles inside; an .srt is only written for other containers, audio-only
+-- input and subtitles-only runs, and its base name differs from the copy's, so
+-- VLC would not pick it up by itself. A leftover .srt from an older run next
+-- to a copy that has its subtitles inside is ignored.
 function reopen_target(j, exists)
     exists = exists or file_exists
     if j.in_place then
         return j.uri, {}
     end
-    local options = {}
-    if j.mode ~= "dub" and exists(j.srt) then
-        table.insert(options, "sub-file=" .. j.srt)
-    end
+    local copy = nil
     if j.mode ~= "subs" then
         for _, candidate in ipairs({ j.dubbed, j.dubbed_audio }) do
             if exists(candidate) then
-                return to_uri(candidate), options
+                copy = candidate
+                break
             end
         end
+    end
+    local subs_inside = copy ~= nil and IN_PLACE_EXTENSIONS[extension_of(copy)] == true
+    local options = {}
+    if j.mode ~= "dub" and not subs_inside and exists(j.srt) then
+        table.insert(options, "sub-file=" .. j.srt)
+    end
+    if copy then
+        return to_uri(copy), options
     end
     return j.uri, options  -- subtitles only: the original plus the new .srt
 end

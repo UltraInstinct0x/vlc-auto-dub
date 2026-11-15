@@ -197,15 +197,18 @@ vlc = { strings = { make_uri = function(p) return "file://" .. p end } }
 dofile(arg[1])
 local files = {}
 for f in string.gmatch(arg[3], "[^,]+") do files[f] = true end
-local j = { in_place = false, mode = arg[2], uri = "file:///v/a.mkv",
-            dubbed = "/v/a_dubbed.mkv", dubbed_audio = "/v/a_dubbed.wav", srt = "/v/a.srt" }
+local ext = (arg[3]:match("a_dubbed(%.%a+)") or ".mkv")
+if ext == ".wav" then ext = ".mkv" end
+local j = { in_place = false, mode = arg[2], uri = "file:///v/a" .. ext,
+            dubbed = "/v/a_dubbed" .. ext, dubbed_audio = "/v/a_dubbed.wav", srt = "/v/a.srt" }
 local path, options = reopen_target(j, function(p) return files[p] == true end)
 io.write(path, "\t", table.concat(options, "|"))
 """
 
 
 @pytest.mark.parametrize("mode,files,expected", [
-    ("both", "/v/a_dubbed.mkv,/v/a.srt", ("file:///v/a_dubbed.mkv", "sub-file=/v/a.srt")),
+    ("both", "/v/a_dubbed.mkv,/v/a.srt", ("file:///v/a_dubbed.mkv", "")),   # subs inside; old .srt ignored
+    ("both", "/v/a_dubbed.avi,/v/a.srt", ("file:///v/a_dubbed.avi", "sub-file=/v/a.srt")),  # .avi: .srt beside
     ("subs", "/v/a_dubbed.mkv,/v/a.srt", ("file:///v/a.mkv", "sub-file=/v/a.srt")),  # stale dub ignored
     ("dub", "/v/a_dubbed.mkv,/v/a.srt", ("file:///v/a_dubbed.mkv", "")),             # stale srt ignored
     ("both", "/v/a_dubbed.wav,/v/a.srt", ("file:///v/a_dubbed.wav", "sub-file=/v/a.srt")),  # audio-only
