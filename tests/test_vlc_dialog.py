@@ -53,30 +53,49 @@ vlc = {
         return d
     end,
     input = { item = function() return { uri = function() return arg[1] end } end },
-    strings = { decode_uri = function(u) return u end },
+    strings = { decode_uri = function(u) return u end,
+                make_uri = function(p) return "file://" .. p end },
     msg = { info = function() end, err = function(m) out("ERR", m) end },
+    object = { input = function() return {} end },
+    var = { get = function(obj, name) return 42000000 end },    -- 42 s, in microseconds
+    playlist = {
+        current = function() return 7 end,
+        add = function(items)
+            for _, it in ipairs(items) do out("ADD", it.path, table.concat(it.options, "|")) end
+        end,
+        delete = function(id) out("DEL", id) end,
+    },
 }
 os.execute = function(cmd) out("EXEC", cmd); return 0 end
 dofile(arg[2])
 activate()
-out("PRESS", "Start")
-buttons["Start"]()
+for name in string.gmatch(arg[3] or "", "[^,]+") do
+    out("PRESS", name)
+    buttons[name]()
+end
 """
 
 
-def run_dialog(tmp_path, video_name: str, config: str = "") -> tuple[list, list, str]:
-    """Return (settings-dialog widgets, each dropdown's values, the Start command)."""
+def run_lua(tmp_path, video_name: str, presses: str, config: str = "", **env_extra) -> list:
+    """Run activate() and press the named buttons; return the recorded rows."""
     cfg = tmp_path / "config.lua"
     cfg.write_text(f"return {{ {config} }}\n", encoding="utf-8")
     env = dict(os.environ, VLC_AUTODUB_SCRIPT="/opt/autodub/main.py",
                VLC_AUTODUB_PYTHON="/usr/bin/python3", VLC_AUTODUB_CONFIG=str(cfg))
+    env.update(env_extra)
     video = tmp_path / video_name
     lines = subprocess.run(
-        [LUA, "-", f"file://{video}", os.path.join(ROOT, "transcribe.vlc.lua")],
+        [LUA, "-", f"file://{video}", os.path.join(ROOT, "transcribe.vlc.lua"), presses],
         input=MOCK, env=env, check=True, capture_output=True, text=True,
     ).stdout.splitlines()
     rows = [line.split("\t") for line in lines]
     assert not [r for r in rows if r[0] == "ERR"], rows
+    return rows
+
+
+def run_dialog(tmp_path, video_name: str, config: str = "") -> tuple[list, list, str]:
+    """Return (settings-dialog widgets, each dropdown's values, the Start command)."""
+    rows = run_lua(tmp_path, video_name, "Start", config)
     settings_end = next(i for i, r in enumerate(rows) if r[0] == "PRESS")
     widgets = [dict(kind=r[1], text=r[2], col=int(r[3]), row=int(r[4]),
                     hspan=int(r[5]), vspan=int(r[6]))
@@ -125,3 +144,83 @@ def test_start_runs_the_cli_with_dialog_defaults(tmp_path):
     assert command.startswith("( '/usr/bin/python3' '/opt/autodub/main.py' ")
     assert f"'{tmp_path}/my clip.mp4' '--in-place' '--target-lang' 'en' &" in command
 
+
+# --- Reopen video ----------------------------------------------------------
+
+def _reopened(rows) -> tuple[str, list[str]]:
+    add = next(r for r in rows if r[0] == "ADD")
+    assert ["DEL", "7"] in rows                       # the old playlist entry goes
+    return add[1], add[2].split("|")
+
+
+def test_reopen_in_place_reloads_the_original(tmp_path):
+    path, options = _reopened(run_lua(tmp_path, "my clip.mp4", "Start,Reopen video"))
+    assert path == f"file://{tmp_path}/my clip.mp4"
+    assert options == ["start-time=42"]
+
+
+def test_reopen_separate_files_plays_the_dubbed_copy_with_its_subtitles(tmp_path):
+    # .avi cannot take tracks in place, so the dub is written beside it.
+    (tmp_path / "old clip_dubbed.avi").write_bytes(b"x")
+    (tmp_path / "old clip.srt").write_text("1\n", encoding="utf-8")
+    path, options = _reopened(run_lua(tmp_path, "old clip.avi", "Start,Reopen video"))
+    assert path == f"file://{tmp_path}/old clip_dubbed.avi"
+    assert options == [f"sub-file={tmp_path}/old clip.srt", "start-time=42"]
+
+
+def test_reopen_after_dialog_restart_remembers_separate_files(tmp_path):
+    """A running job found on activate() keeps its mode (read from the pidfile)."""
+    (tmp_path / "film_dubbed.avi").write_bytes(b"x")
+    (tmp_path / "film.autodub.pid").write_text("12345 separate dub\n", encoding="utf-8")
+    rows = run_lua(tmp_path, "film.avi", "Reopen video")
+    assert ["D", "Auto-Dub"] in rows                  # status dialog, not settings
+    path, options = _reopened(rows)
+    assert path == f"file://{tmp_path}/film_dubbed.avi"
+    assert options == ["start-time=42"]               # dub only: no subtitles attached
+
+
+REOPEN = r"""
+vlc = { strings = { make_uri = function(p) return "file://" .. p end } }
+dofile(arg[1])
+local files = {}
+for f in string.gmatch(arg[3], "[^,]+") do files[f] = true end
+local j = { in_place = false, mode = arg[2], uri = "file:///v/a.mkv",
+            dubbed = "/v/a_dubbed.mkv", dubbed_audio = "/v/a_dubbed.wav", srt = "/v/a.srt" }
+local path, options = reopen_target(j, function(p) return files[p] == true end)
+io.write(path, "\t", table.concat(options, "|"))
+"""
+
+
+@pytest.mark.parametrize("mode,files,expected", [
+    ("both", "/v/a_dubbed.mkv,/v/a.srt", ("file:///v/a_dubbed.mkv", "sub-file=/v/a.srt")),
+    ("subs", "/v/a_dubbed.mkv,/v/a.srt", ("file:///v/a.mkv", "sub-file=/v/a.srt")),  # stale dub ignored
+    ("dub", "/v/a_dubbed.mkv,/v/a.srt", ("file:///v/a_dubbed.mkv", "")),             # stale srt ignored
+    ("both", "/v/a_dubbed.wav,/v/a.srt", ("file:///v/a_dubbed.wav", "sub-file=/v/a.srt")),  # audio-only
+    ("both", "", ("file:///v/a.mkv", "")),                                           # nothing written
+])
+def test_reopen_target(mode, files, expected):
+    out = subprocess.run([LUA, "-", os.path.join(ROOT, "transcribe.vlc.lua"), mode, files or ","],
+                         input=REOPEN, check=True, capture_output=True, text=True).stdout
+    assert tuple(out.split("\t")) == expected
+
+
+def test_real_job_command_records_its_mode_and_cleans_up(tmp_path):
+    """Run the exact shell command Start builds, with a stand-in for the CLI."""
+    import time
+    fake_cli = tmp_path / "fake_cli.sh"
+    fake_cli.write_text("sleep 0.5\n", encoding="utf-8")   # stands in for main.py
+    rows = run_lua(tmp_path, "clip.avi", "Start",
+                   VLC_AUTODUB_PYTHON="/bin/sh", VLC_AUTODUB_SCRIPT=str(fake_cli))
+    command = next(r[1] for r in rows if r[0] == "EXEC")
+    subprocess.run(["/bin/sh", "-c", command], check=True)
+    pidfile, log = tmp_path / "clip.autodub.pid", tmp_path / "clip.autodub.log"
+    deadline = time.time() + 5
+    while not pidfile.exists() and time.time() < deadline:
+        time.sleep(0.02)
+    pid, where, mode = pidfile.read_text().split()
+    assert pid.isdigit() and (where, mode) == ("separate", "both")
+    while "AUTODUB_EXIT=" not in (log.read_text() if log.exists() else "") \
+            and time.time() < deadline:
+        time.sleep(0.05)
+    assert "AUTODUB_EXIT=0" in log.read_text()
+    assert not pidfile.exists()
