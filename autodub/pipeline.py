@@ -86,6 +86,28 @@ def _verify_rewrite(original: str, rewritten: str, expected: dict, language: str
                          "the original was left untouched")
 
 
+def _write_dubbed_copy(input_path: str, dubbed: str, output_media: str, language: str,
+                       summary: dict) -> None:
+    """Write ``<base>_dubbed<ext>``: every original track plus the dub as default audio.
+
+    Same layout as --in-place (original audio, subtitles, chapters and other
+    tracks kept, nothing re-encoded but the dub), written to the separate copy.
+    Containers that cannot carry some original track fall back to the video
+    plus the dub only, with a warning, rather than failing the run.
+    """
+    try:
+        expected = media.mux_tracks(input_path, output_media, audio=dubbed, srt=None,
+                                    language=language, subtitle_codec="")
+        _verify_rewrite(input_path, output_media, expected, language, True, False)
+        summary["kept_original_tracks"] = True
+    except MediaError as exc:
+        summary["kept_original_tracks"] = False
+        summary["warnings"].append(
+            f"could not keep the original tracks in {os.path.basename(output_media)} "
+            f"({exc}); it has the video and the dub only")
+        media.mux(input_path, dubbed, output_media)
+
+
 def run(input_path: str, output_base: str | None, config: Config) -> dict:
     """Run the dubbing pipeline. Returns a summary dict."""
     if not os.path.isfile(input_path):
@@ -336,7 +358,7 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
             summary["mode"] = "full"
             return summary
         if has_video:
-            media.mux(input_path, dubbed, output_media)
+            _write_dubbed_copy(input_path, dubbed, output_media, language, summary)
         else:
             # audio-only input has no video stream to copy; keep the dubbed audio
             shutil.copyfile(dubbed, output_media)

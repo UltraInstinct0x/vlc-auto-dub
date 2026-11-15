@@ -49,7 +49,10 @@ language pair the local backends support. No API key is required.
 python main.py INPUT --output-base BASE [options]
 ```
 
-Writes `<BASE>_dubbed<ext>` (dubbed video) and `<BASE>.srt` (subtitles).
+Writes `<BASE>_dubbed<ext>` and `<BASE>.srt` (subtitles). The dubbed copy keeps
+every original track (audio, subtitles, chapters) and adds the dub as the default
+audio track, like `--in-place`; a container that cannot carry some original track
+falls back to the video plus the dub, with a warning.
 
 ```bash
 python main.py INPUT --in-place [options]
