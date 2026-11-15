@@ -54,6 +54,10 @@ def test_argv_shapes():
     assert "--no-sound-tags" not in lua_args(v, "en", "tr", "dub", True, sound_tags=False)
     assert lua_args(v, "en", "tr", "both", True, use_embedded=True)[-1] == "--use-embedded-subs"
     assert "--use-embedded-subs" not in lua_args(v, "en", "tr", "both", True)
+    # A separate dubbed copy carries its subtitles, so no .srt beside it.
+    assert lua_args(v, "en", "tr", "both", False)[:4] == [
+        v, "--output-base", "/movies/my clip", "--no-srt"]
+    assert "--no-srt" in lua_args(v, "en", "tr", "dub", False)
     mixed = lua_args(v, "en", "tr", "both", True, dub_volume=0.75, original_volume=0.3)
     assert mixed[-4:] == ["--dub-volume", "0.75", "--original-volume", "0.3"]
     # Defaults (1.0 / 0) add nothing, and subtitles-only never carries volumes.
@@ -86,7 +90,7 @@ def test_extension_argv_runs_the_real_cli_sidecar(tone_video, tmp_path, capsys):
     assert os.path.exists(dubbed)
     kinds = [s["codec_type"] for s in media.probe_streams(dubbed)]
     assert kinds.count("audio") == 2 and kinds.count("subtitle") == 1   # subs inside
-    assert os.path.exists(video.replace(".mp4", ".srt"))                # default: also beside
+    assert not os.path.exists(video.replace(".mp4", ".srt"))
     assert hashlib.sha256(open(video, "rb").read()).hexdigest() == before
 
 

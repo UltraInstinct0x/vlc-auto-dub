@@ -118,6 +118,11 @@ function build_args(video, source, target, mode, in_place, sound_tags, use_embed
     else
         table.insert(args, "--output-base")
         table.insert(args, strip_extension(video))
+        if mode ~= "subs" then
+            -- The dubbed copy carries the subtitles; no .srt beside it (the CLI
+            -- still writes one when the copy's container cannot hold them).
+            table.insert(args, "--no-srt")
+        end
     end
     if source ~= "auto" then
         table.insert(args, "--source-lang")
