@@ -193,6 +193,33 @@ def slice_audio(src: str, start: float, dur: float, out_wav: str,
     )
 
 
+def mix_segment(dub_wav: str, out_wav: str, *, dub_volume: float = 1.0,
+                original_wav: str | None = None, original_volume: float = 0.0,
+                sample_rate: int = SAMPLE_RATE) -> None:
+    """Scale the dub clip and optionally lay the original speech under it.
+
+    The output keeps the dub clip's length exactly (it already fills its slot),
+    so the assembled timeline is unchanged. A limiter (no auto-level) stops the
+    sum from clipping without changing the loudness of quiet passages.
+    """
+    require_binary("ffmpeg")
+    if original_wav is None or original_volume <= 0:
+        graph = f"[0:a]volume={dub_volume:.4f},alimiter=limit=0.97:level=false[out]"
+        inputs = ["-i", dub_wav]
+    else:
+        graph = (f"[0:a]volume={dub_volume:.4f}[d];[1:a]volume={original_volume:.4f}[o];"
+                 f"[d][o]amix=inputs=2:duration=first:normalize=false,"
+                 f"alimiter=limit=0.97:level=false[out]")
+        inputs = ["-i", dub_wav, "-i", original_wav]
+    _run(
+        [
+            "ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", graph,
+            "-map", "[out]", "-ac", "1", "-ar", str(sample_rate),
+            "-acodec", "pcm_s16le", out_wav,
+        ]
+    )
+
+
 def concat_audio(parts: list[str], out_wav: str, list_file: str,
                  sample_rate: int = SAMPLE_RATE) -> None:
     """Concatenate PCM WAV parts via the ffmpeg concat demuxer."""
