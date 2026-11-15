@@ -220,6 +220,11 @@ IN_PLACE_SUBTITLE_CODEC = {
 }
 
 
+def stream_language(stream: dict) -> str:
+    """A stream's language tag; ``und`` when absent (Matroska does not store ``und``)."""
+    return stream.get("tags", {}).get("language") or "und"
+
+
 def is_autodub_stream(stream: dict) -> bool:
     # Matroska keeps the track name as "title"; MP4/MOV store it as "handler_name".
     tags = stream.get("tags", {})
@@ -242,7 +247,7 @@ def mux_tracks(src: str, out: str, *, audio: str | None, srt: str | None,
     streams = probe_streams(src)
     dropped = [
         s for s in streams
-        if is_autodub_stream(s) and s.get("tags", {}).get("language") == language
+        if is_autodub_stream(s) and stream_language(s) == language
     ]
     kept = [s for s in streams if s not in dropped]
     n_audio = sum(1 for s in kept if s.get("codec_type") == "audio")
