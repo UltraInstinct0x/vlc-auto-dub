@@ -20,7 +20,7 @@
 function descriptor()
     return {
         title = "Auto-Dub (vlc-auto-dub)",
-        version = "3.0",
+        version = "3.0.2",
         author = "vlc-auto-dub",
         shortdesc = "Dub and/or subtitle the current video",
         capabilities = { "menu" }
@@ -128,12 +128,56 @@ local function close_dialog()
     end
 end
 
-local function job_for(video, uri, in_place)
+local function job_for(video, uri, in_place, mode)
     local base = strip_extension(video)
     return {
-        video = video, uri = uri, in_place = in_place,
+        video = video, uri = uri, in_place = in_place, mode = mode,
         log = base .. ".autodub.log", pidfile = base .. ".autodub.pid",
+        -- Where the CLI writes without --in-place (must match autodub/pipeline.py:
+        -- <base>_dubbed<ext>, <base>_dubbed.wav for audio-only input, <base>.srt).
+        dubbed = base .. "_dubbed" .. (video:match("(%.[^%./]+)$") or ".mp4"),
+        dubbed_audio = base .. "_dubbed.wav",
+        srt = base .. ".srt",
     }
+end
+
+local function file_exists(path)
+    local fh = io.open(path, "r")
+    if fh then
+        fh:close()
+        return true
+    end
+    return false
+end
+
+local function to_uri(path)
+    if vlc and vlc.strings and vlc.strings.make_uri then
+        return vlc.strings.make_uri(path)
+    end
+    return "file://" .. path
+end
+
+-- What "Reopen video" should play: the MRL and extra item options.
+-- In place, the original file now holds the new tracks. Otherwise the dub is
+-- a separate copy beside it, and its subtitles have a different base name, so
+-- VLC would not pick them up by itself.
+function reopen_target(j, exists)
+    exists = exists or file_exists
+    if j.in_place then
+        return j.uri, {}
+    end
+    local options = {}
+    if j.mode ~= "dub" and exists(j.srt) then
+        table.insert(options, "sub-file=" .. j.srt)
+    end
+    if j.mode ~= "subs" then
+        for _, candidate in ipairs({ j.dubbed, j.dubbed_audio }) do
+            if exists(candidate) then
+                return to_uri(candidate), options
+            end
+        end
+    end
+    return j.uri, options  -- subtitles only: the original plus the new .srt
 end
 
 local function shell_ok(cmd)
@@ -171,8 +215,10 @@ local function show_status_dialog(message)
         if code == "0" then
             if job.in_place then
                 status:set_text("Done. Click 'Reopen video' to load the new tracks.")
+            elseif job.mode == "subs" then
+                status:set_text("Done. 'Reopen video' loads the new subtitles.")
             else
-                status:set_text("Done. Output written next to the video.")
+                status:set_text("Done. 'Reopen video' plays the dubbed copy.")
             end
         elseif code == "143" or code == "137" then
             status:set_text("Stopped. The original file was not changed.")
@@ -204,8 +250,8 @@ local function show_status_dialog(message)
     end, 2, 2, 1, 1)
 
     dlg:add_button("Reopen video", function()
-        -- Reload the (rewritten) file at the current position so VLC sees the
-        -- new audio and subtitle tracks.
+        -- Reload at the current position: the rewritten file (in place) or the
+        -- dubbed copy with its subtitles (separate files).
         local seconds = 0
         local input = vlc.object.input()
         if input then
@@ -214,7 +260,9 @@ local function show_status_dialog(message)
             seconds = (t > 100000) and math.floor(t / 1000000) or math.floor(t)
         end
         local current = vlc.playlist.current()
-        vlc.playlist.add({ { path = job.uri, options = { "start-time=" .. seconds } } })
+        local path, options = reopen_target(job)
+        table.insert(options, "start-time=" .. seconds)
+        vlc.playlist.add({ { path = path, options = options } })
         if current then
             vlc.playlist.delete(current)
         end
@@ -226,7 +274,7 @@ local function show_status_dialog(message)
 end
 
 local function start_job(video, uri, python, script, source, target, mode, in_place, sound_tags)
-    local j = job_for(video, uri, in_place)
+    local j = job_for(video, uri, in_place, mode)
     if running_pid(j) then
         job = j
         show_status_dialog("A job is already running for this video.")
@@ -239,7 +287,11 @@ local function start_job(video, uri, python, script, source, target, mode, in_pl
     -- Run in the background so VLC's UI thread is not blocked. The PID is kept
     -- in a file so the job can be found and stopped even after VLC restarts;
     -- the exit code is appended to the log for the status button.
-    local cmd = "( " .. table.concat(parts, " ") .. " & echo $! > " .. shquote(j.pidfile)
+    -- The pidfile also records where the output goes ("<pid> in-place|separate
+    -- <mode>") so a reopened dialog can still find the dub.
+    local where = in_place and "in-place" or "separate"
+    local cmd = "( " .. table.concat(parts, " ") .. " & echo $! " .. where .. " " .. mode
+        .. " > " .. shquote(j.pidfile)
         .. "; wait $!; code=$?; rm -f " .. shquote(j.pidfile)
         .. "; echo \"AUTODUB_EXIT=$code\" ) > " .. shquote(j.log) .. " 2>&1 &"
     vlc.msg.info("vlc-auto-dub: " .. cmd)
@@ -252,8 +304,29 @@ local function show_settings_dialog(video, uri, python, script)
     close_dialog()
     dlg = vlc.dialog("Auto-Dub settings")
 
-    dlg:add_label("Spoken language (source):", 1, 1, 1, 1)
-    local source_dd = dlg:add_dropdown(2, 1, 2, 1)
+    -- Layout for VLC's macOS dialog (modules/gui/macosx/VLCUIWidgets.m), which
+    -- starts the window at 1x1 and grows it to the grid's minimum size:
+    --  * a column is as wide as its widest single-cell dropdown/label/button,
+    --    but one single-cell check box (a width-sizable widget) or no
+    --    single-cell widget at all makes it count as only 128 pt;
+    --  * dropdowns are drawn at their natural width whatever the column;
+    --  * widgets spanning columns are left out of the column widths, and check
+    --    boxes are stretched across the columns they span;
+    --  * a row without a single-row widget gets 128 pt of height.
+    -- So: labels in column 1, dropdowns as single cells in column 2 (setting
+    -- its width), check boxes spanning both columns, and no empty rows.
+    local row = 0
+    local function next_row()
+        row = row + 1
+        return row
+    end
+    local function dropdown(label)
+        local r = next_row()
+        dlg:add_label(label, 1, r, 1, 1)
+        return dlg:add_dropdown(2, r, 1, 1)
+    end
+
+    local source_dd = dropdown("Spoken language:")
     local sources = { "auto" }
     source_dd:add_value("Auto-detect", 1)
     for i, lang in ipairs(LANGUAGES) do
@@ -261,31 +334,30 @@ local function show_settings_dialog(video, uri, python, script)
         source_dd:add_value(lang[2] .. " (" .. lang[1] .. ")", i + 1)
     end
 
-    dlg:add_label("Translate to (target):", 1, 2, 1, 1)
-    local target_dd = dlg:add_dropdown(2, 2, 2, 1)
+    local target_dd = dropdown("Translate to:")
     local targets = {}
     for i, lang in ipairs(LANGUAGES) do
         table.insert(targets, lang[1])
         target_dd:add_value(lang[2] .. " (" .. lang[1] .. ")", i)
     end
     table.insert(targets, "same")
-    target_dd:add_value("No translation (same as source)", #targets)
+    target_dd:add_value("No translation", #targets)
 
-    dlg:add_label("Produce:", 1, 3, 1, 1)
-    local mode_dd = dlg:add_dropdown(2, 3, 2, 1)
+    local mode_dd = dropdown("Produce:")
     for i, m in ipairs(MODES) do
         mode_dd:add_value(m[2], i)
     end
 
     local can_in_place = IN_PLACE_EXTENSIONS[extension_of(video)] == true
-    local in_place_cb = dlg:add_check_box(
-        "Add tracks into this file (keeps all original tracks)", can_in_place, 1, 4, 3, 1)
+    local in_place_cb = dlg:add_check_box("Add tracks into this file", can_in_place,
+        1, next_row(), 2, 1)
     if not can_in_place then
-        dlg:add_label("(only .mp4/.m4v/.mov/.mkv can take tracks in place)", 1, 5, 3, 1)
+        dlg:add_label("(needs .mp4, .m4v, .mov or .mkv)", 1, next_row(), 2, 1)
     end
-    local tags_cb = dlg:add_check_box(
-        "Sound tags in subtitles: [laughter] [screaming] [music] [train] ...", true, 1, 6, 3, 1)
+    local tags_cb = dlg:add_check_box("Sound tags: [laughter], [music]...", true,
+        1, next_row(), 2, 1)
 
+    local r = next_row()
     dlg:add_button("Start", function()
         local source = sources[source_dd:get_value()] or "auto"
         local target = targets[target_dd:get_value()] or "same"
@@ -293,8 +365,8 @@ local function show_settings_dialog(video, uri, python, script)
         local in_place = can_in_place and in_place_cb:get_checked()
         start_job(video, uri, python, script, source, target, mode, in_place,
             tags_cb:get_checked())
-    end, 1, 7, 1, 1)
-    dlg:add_button("Cancel", close_dialog, 2, 7, 1, 1)
+    end, 1, r, 1, 1)
+    dlg:add_button("Cancel", close_dialog, 2, r, 1, 1)
     dlg:show()
 end
 
@@ -316,6 +388,10 @@ function activate()
 
     local j = job_for(video, uri, true)
     if running_pid(j) then
+        local where, mode = (read_file(j.pidfile) or ""):match("%d+%s+(%S+)%s+(%S+)")
+        if where then
+            j = job_for(video, uri, where == "in-place", mode)
+        end
         job = j
         show_status_dialog("A job is running for this video.")
         return

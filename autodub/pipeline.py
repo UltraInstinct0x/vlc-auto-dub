@@ -76,7 +76,7 @@ def _verify_rewrite(original: str, rewritten: str, expected: dict, language: str
         raise MediaError(f"rewritten file has streams {counts}, expected {expected}; "
                          f"the original was left untouched")
     ours = [s for s in streams if media.is_autodub_stream(s)
-            and s.get("tags", {}).get("language") == language]
+            and media.stream_language(s) == language]
     want = ({"subtitle"} if added_subs else set()) | ({"audio"} if added_audio else set())
     if {s.get("codec_type") for s in ours} != want:
         raise MediaError("rewritten file is missing the labelled AutoDub tracks; "
@@ -173,14 +173,15 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
         detected_note = getattr(stt, "detected_language", None)
         progress(f"transcribed {len(raw_segments)} lines"
                  + (f" (language: {detected_note})" if detected_note else ""))
-        if not source_code and target_code:
-            # Source left on auto: translate from whatever the STT detected.
-            detected = getattr(stt, "detected_language", None)
-            if detected:
-                source_code = primary_subtag(detected)
-                source_lang = source_code
-                summary["detected_language"] = source_code
-            else:
+        detected = getattr(stt, "detected_language", None)
+        if not source_code and detected:
+            # Source left on auto: use what the STT detected, both to
+            # translate from and to tag the new tracks with.
+            source_code = primary_subtag(detected)
+            source_lang = source_code
+            summary["detected_language"] = source_code
+        if target_code:
+            if not source_code:
                 summary["warnings"].append(
                     "source language could not be detected; not translating")
             do_translate = bool(source_code and source_code != target_code)
