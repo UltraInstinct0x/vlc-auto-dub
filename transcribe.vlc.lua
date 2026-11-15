@@ -20,7 +20,7 @@
 function descriptor()
     return {
         title = "Auto-Dub (vlc-auto-dub)",
-        version = "3.0.2",
+        version = "3.1",
         author = "vlc-auto-dub",
         shortdesc = "Dub and/or subtitle the current video",
         capabilities = { "menu" }
@@ -84,7 +84,7 @@ end
 
 -- Build the CLI argument list (everything after "<python> <script>").
 -- Mirrored by tests/test_vlc_invocation.py; keep the two in sync.
-function build_args(video, source, target, mode, in_place, sound_tags)
+function build_args(video, source, target, mode, in_place, sound_tags, use_embedded)
     local args = { video }
     if in_place then
         table.insert(args, "--in-place")
@@ -107,6 +107,9 @@ function build_args(video, source, target, mode, in_place, sound_tags)
     end
     if sound_tags == false and mode ~= "dub" then
         table.insert(args, "--no-sound-tags")
+    end
+    if use_embedded then
+        table.insert(args, "--use-embedded-subs")
     end
     return args
 end
@@ -273,7 +276,8 @@ local function show_status_dialog(message)
     dlg:show()
 end
 
-local function start_job(video, uri, python, script, source, target, mode, in_place, sound_tags)
+local function start_job(video, uri, python, script, source, target, mode, in_place, sound_tags,
+                         use_embedded)
     local j = job_for(video, uri, in_place, mode)
     if running_pid(j) then
         job = j
@@ -281,7 +285,8 @@ local function start_job(video, uri, python, script, source, target, mode, in_pl
         return
     end
     local parts = { shquote(python), shquote(script) }
-    for _, arg in ipairs(build_args(video, source, target, mode, in_place, sound_tags)) do
+    for _, arg in ipairs(build_args(video, source, target, mode, in_place, sound_tags,
+                                           use_embedded)) do
         table.insert(parts, shquote(arg))
     end
     -- Run in the background so VLC's UI thread is not blocked. The PID is kept
@@ -356,6 +361,8 @@ local function show_settings_dialog(video, uri, python, script)
     end
     local tags_cb = dlg:add_check_box("Sound tags: [laughter], [music]...", true,
         1, next_row(), 2, 1)
+    local embedded_cb = dlg:add_check_box("Use the video's subtitles (faster)", true,
+        1, next_row(), 2, 1)
 
     local r = next_row()
     dlg:add_button("Start", function()
@@ -364,7 +371,7 @@ local function show_settings_dialog(video, uri, python, script)
         local mode = (MODES[mode_dd:get_value()] or MODES[1])[1]
         local in_place = can_in_place and in_place_cb:get_checked()
         start_job(video, uri, python, script, source, target, mode, in_place,
-            tags_cb:get_checked())
+            tags_cb:get_checked(), embedded_cb:get_checked())
     end, 1, r, 1, 1)
     dlg:add_button("Cancel", close_dialog, 2, r, 1, 1)
     dlg:show()
