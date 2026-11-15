@@ -175,6 +175,8 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
         "providers": {"stt": config.stt, "tts": None if config.subtitle_only else config.tts},
         "voice": voice,
         "translated": False,
+        "dub_volume": config.dub_volume,
+        "original_volume": config.original_volume,
         "warnings": [],
     }
     if voice_warning:
@@ -294,6 +296,17 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
             tts.synthesize(text, raw, voice)
             fitted = os.path.join(workdir, f"fit_{i}.wav")
             media.fit_segment(raw, end - start, fitted)
+            if config.original_volume > 0 or config.dub_volume != 1.0:
+                # Voice-over: keep the original speech audible under the dub.
+                original = None
+                if config.original_volume > 0:
+                    original = os.path.join(workdir, f"orig_{i}.wav")
+                    media.slice_audio(audio, start, end - start, original)
+                mixed = os.path.join(workdir, f"mix_{i}.wav")
+                media.mix_segment(fitted, mixed, dub_volume=config.dub_volume,
+                                  original_wav=original,
+                                  original_volume=config.original_volume)
+                fitted = mixed
             parts.append(fitted)
             cursor = end
 
