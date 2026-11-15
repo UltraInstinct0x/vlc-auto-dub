@@ -104,7 +104,7 @@ def probe_streams(path: str) -> list[dict]:
         [
             "ffprobe", "-v", "error", "-show_entries",
             "stream=index,codec_type,codec_name:stream_tags=language,title,handler_name"
-            ":stream_disposition=default",
+            ":stream_disposition=default,forced,hearing_impaired",
             "-of", "json", path,
         ]
     ).stdout
