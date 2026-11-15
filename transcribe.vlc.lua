@@ -20,7 +20,7 @@
 function descriptor()
     return {
         title = "Auto-Dub (vlc-auto-dub)",
-        version = "3.0",
+        version = "3.0.1",
         author = "vlc-auto-dub",
         shortdesc = "Dub and/or subtitle the current video",
         capabilities = { "menu" }
@@ -252,8 +252,29 @@ local function show_settings_dialog(video, uri, python, script)
     close_dialog()
     dlg = vlc.dialog("Auto-Dub settings")
 
-    dlg:add_label("Spoken language (source):", 1, 1, 1, 1)
-    local source_dd = dlg:add_dropdown(2, 1, 2, 1)
+    -- Layout for VLC's macOS dialog (modules/gui/macosx/VLCUIWidgets.m), which
+    -- starts the window at 1x1 and grows it to the grid's minimum size:
+    --  * a column is as wide as its widest single-cell dropdown/label/button,
+    --    but one single-cell check box (a width-sizable widget) or no
+    --    single-cell widget at all makes it count as only 128 pt;
+    --  * dropdowns are drawn at their natural width whatever the column;
+    --  * widgets spanning columns are left out of the column widths, and check
+    --    boxes are stretched across the columns they span;
+    --  * a row without a single-row widget gets 128 pt of height.
+    -- So: labels in column 1, dropdowns as single cells in column 2 (setting
+    -- its width), check boxes spanning both columns, and no empty rows.
+    local row = 0
+    local function next_row()
+        row = row + 1
+        return row
+    end
+    local function dropdown(label)
+        local r = next_row()
+        dlg:add_label(label, 1, r, 1, 1)
+        return dlg:add_dropdown(2, r, 1, 1)
+    end
+
+    local source_dd = dropdown("Spoken language:")
     local sources = { "auto" }
     source_dd:add_value("Auto-detect", 1)
     for i, lang in ipairs(LANGUAGES) do
@@ -261,31 +282,30 @@ local function show_settings_dialog(video, uri, python, script)
         source_dd:add_value(lang[2] .. " (" .. lang[1] .. ")", i + 1)
     end
 
-    dlg:add_label("Translate to (target):", 1, 2, 1, 1)
-    local target_dd = dlg:add_dropdown(2, 2, 2, 1)
+    local target_dd = dropdown("Translate to:")
     local targets = {}
     for i, lang in ipairs(LANGUAGES) do
         table.insert(targets, lang[1])
         target_dd:add_value(lang[2] .. " (" .. lang[1] .. ")", i)
     end
     table.insert(targets, "same")
-    target_dd:add_value("No translation (same as source)", #targets)
+    target_dd:add_value("No translation", #targets)
 
-    dlg:add_label("Produce:", 1, 3, 1, 1)
-    local mode_dd = dlg:add_dropdown(2, 3, 2, 1)
+    local mode_dd = dropdown("Produce:")
     for i, m in ipairs(MODES) do
         mode_dd:add_value(m[2], i)
     end
 
     local can_in_place = IN_PLACE_EXTENSIONS[extension_of(video)] == true
-    local in_place_cb = dlg:add_check_box(
-        "Add tracks into this file (keeps all original tracks)", can_in_place, 1, 4, 3, 1)
+    local in_place_cb = dlg:add_check_box("Add tracks into this file", can_in_place,
+        1, next_row(), 2, 1)
     if not can_in_place then
-        dlg:add_label("(only .mp4/.m4v/.mov/.mkv can take tracks in place)", 1, 5, 3, 1)
+        dlg:add_label("(needs .mp4, .m4v, .mov or .mkv)", 1, next_row(), 2, 1)
     end
-    local tags_cb = dlg:add_check_box(
-        "Sound tags in subtitles: [laughter] [screaming] [music] [train] ...", true, 1, 6, 3, 1)
+    local tags_cb = dlg:add_check_box("Sound tags: [laughter], [music]...", true,
+        1, next_row(), 2, 1)
 
+    local r = next_row()
     dlg:add_button("Start", function()
         local source = sources[source_dd:get_value()] or "auto"
         local target = targets[target_dd:get_value()] or "same"
@@ -293,8 +313,8 @@ local function show_settings_dialog(video, uri, python, script)
         local in_place = can_in_place and in_place_cb:get_checked()
         start_job(video, uri, python, script, source, target, mode, in_place,
             tags_cb:get_checked())
-    end, 1, 7, 1, 1)
-    dlg:add_button("Cancel", close_dialog, 2, 7, 1, 1)
+    end, 1, r, 1, 1)
+    dlg:add_button("Cancel", close_dialog, 2, r, 1, 1)
     dlg:show()
 end
 
