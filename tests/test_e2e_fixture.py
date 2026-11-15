@@ -42,8 +42,11 @@ def test_end_to_end_fixture(tone_video, tmp_path):
     # R2.3/R6: translation ran through the fake and marked the run translated.
     assert summary["translated"] is True
 
-    # R2.7/R4.3: subtitles parse, are ordered and non-overlapping.
-    cues = _util.parse_srt(summary["output_srt"])
+    # R2.7/R4.3: subtitles parse, are ordered and non-overlapping. They are
+    # inside the dubbed copy and, by default, in <base>.srt as well.
+    assert summary["subtitles_embedded"] is True
+    cues = _util.embedded_cues(out_video)
+    assert cues == _util.parse_srt(summary["output_srt"])
     assert cues, "expected at least one cue"
     _util.assert_monotonic_nonoverlapping(cues)
     assert all(text.startswith("[tr]") for _s, _e, text in cues)

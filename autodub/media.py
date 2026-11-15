@@ -260,12 +260,13 @@ def is_autodub_stream(stream: dict) -> bool:
 
 
 def mux_tracks(src: str, out: str, *, audio: str | None, srt: str | None,
-               language: str, subtitle_codec: str) -> dict:
+               language: str, subtitle_codec: str, subtitle_default: bool = False) -> dict:
     """Copy every stream of ``src`` to ``out`` and add the dub and subtitle tracks.
 
     Nothing from ``src`` is re-encoded. The new audio track (if ``audio``) is
     encoded to AAC and made the default audio track; the new subtitle track is
-    added but not forced on. Earlier AutoDub tracks for the same ``language``
+    added but not forced on, unless ``subtitle_default`` makes it the default
+    subtitle track (the others then lose that flag). Earlier AutoDub tracks for the same ``language``
     are dropped so re-dubbing replaces them instead of piling up.
 
     Returns the stream counts the output is expected to have, for verification.
@@ -312,9 +313,12 @@ def mux_tracks(src: str, out: str, *, audio: str | None, srt: str | None,
             f"-metadata:s:a:{n_audio}", f"handler_name={label}",
         ]
     if sub_input is not None:
+        if subtitle_default:
+            for i in range(n_subs):
+                cmd += [f"-disposition:s:{i}", "0"]
         cmd += [
             f"-c:s:{n_subs}", subtitle_codec,
-            f"-disposition:s:{n_subs}", "0",
+            f"-disposition:s:{n_subs}", "default" if subtitle_default else "0",
             f"-metadata:s:s:{n_subs}", f"language={language}",
             f"-metadata:s:s:{n_subs}", f"title={label}",
             f"-metadata:s:s:{n_subs}", f"handler_name={label}",

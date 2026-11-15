@@ -31,7 +31,8 @@ language pair the local backends support. No API key is required.
 - **Language-general**: `--source-lang`/`--target-lang` accept arbitrary
   ISO-style codes the local backends support. Missing argos packs install on
   demand; the TTS voice follows the target language.
-- **Subtitles**: writes an UTF-8 `.srt` next to the dubbed media.
+- **Subtitles**: a subtitle track inside the dubbed media, plus an UTF-8 `.srt`
+  (skip it with `--no-srt`).
 - **Handles real inputs**: video or audio-only files, any container ffmpeg
   reads, paths with spaces/non-ASCII characters, and non-ASCII source text.
 
@@ -49,10 +50,14 @@ language pair the local backends support. No API key is required.
 python main.py INPUT --output-base BASE [options]
 ```
 
-Writes `<BASE>_dubbed<ext>` and `<BASE>.srt` (subtitles). The dubbed copy keeps
-every original track (audio, subtitles, chapters) and adds the dub as the default
-audio track, like `--in-place`; a container that cannot carry some original track
-falls back to the video plus the dub, with a warning.
+Writes `<BASE>_dubbed<ext>`: every original track (audio, subtitles, chapters),
+plus the dub as the default audio track and the new subtitles as the default
+subtitle track, like `--in-place` but in a copy, and the subtitles also as
+`<BASE>.srt`. `--no-srt` skips the `.srt` when the subtitles are inside the copy;
+it is still written when they cannot go inside: `--subtitle-only`, audio-only
+input (`<BASE>_dubbed.wav`), containers other than MP4/M4V/MOV/MKV, or a
+container that cannot carry some original track (that copy falls back to the
+video plus the dub, with a warning).
 
 ```bash
 python main.py INPUT --in-place [options]
@@ -93,7 +98,8 @@ python main.py v.mp4 --output-base v --stt whisper --translate argos \
 | Option | Description | Default |
 |---|---|---|
 | `INPUT` | input video file (never modified) | required |
-| `--output-base BASE` | writes `BASE_dubbed<ext>` and `BASE.srt` | required unless `--in-place` |
+| `--output-base BASE` | writes `BASE_dubbed<ext>` and `BASE.srt` (see above) | required unless `--in-place` |
+| `--no-srt` | no `BASE.srt` when the subtitles are inside the dubbed copy | off |
 | `--in-place` | add the tracks inside `INPUT` (see below) | off |
 | `--source-lang` | source language code, e.g. `en` | STT auto-detect |
 | `--target-lang` | target language; when it differs from the source, translate | off |
@@ -254,7 +260,9 @@ are sent.
   `--original-volume` / `--dub-volume`. Preselect your usual levels with
   `original_volume` / `dub_volume` in the config below.
 - **Add tracks into this file** (on by default for MP4/M4V/MOV/MKV): runs
-  `--in-place`. Untick it to write `<base>_dubbed<ext>` / `<base>.srt` instead.
+  `--in-place`. Untick it to write a dubbed copy, `<base>_dubbed<ext>`, instead
+  (with `--no-srt`: the subtitles are inside it); **Reopen video** then plays
+  the copy.
 
 The job runs in the background (log: `<base>.autodub.log`). **Check status**
 reads the log; **Reopen video** reloads the rewritten file at the current

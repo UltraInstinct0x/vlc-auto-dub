@@ -145,7 +145,16 @@ def test_default_mode_still_writes_sidecars_and_keeps_input(tone_video, tmp_path
     summary = run(tone_video, base, build_config(source_lang="en", target_lang="tr", **FAKES))
     assert _sha(tone_video) == before
     assert os.path.exists(summary["output_media"])
-    assert os.path.exists(summary["output_srt"])
+    assert os.path.exists(summary["output_srt"])          # unchanged default
+    assert summary["subtitles_embedded"] is True           # and inside the copy too
+
+
+def test_no_srt_leaves_only_the_self_contained_copy(tone_video, tmp_path):
+    base = str(tmp_path / "out")
+    summary = run(tone_video, base, build_config(source_lang="en", target_lang="tr",
+                                                 write_srt=False, **FAKES))
+    assert summary["subtitles_embedded"] is True and summary["output_srt"] is None
+    assert not os.path.exists(base + ".srt")
 
 
 def test_dub_only_sidecar_mode_writes_no_srt(tone_video, tmp_path):

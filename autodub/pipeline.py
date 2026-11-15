@@ -87,24 +87,38 @@ def _verify_rewrite(original: str, rewritten: str, expected: dict, language: str
 
 
 def _write_dubbed_copy(input_path: str, dubbed: str, output_media: str, language: str,
-                       summary: dict) -> None:
-    """Write ``<base>_dubbed<ext>``: every original track plus the dub as default audio.
+                       summary: dict, *, srt: str | None = None,
+                       subtitle_codec: str | None = None,
+                       fallback_srt: str | None = None) -> None:
+    """Write ``<base>_dubbed<ext>``: every original track, the dub, the new subtitles.
 
     Same layout as --in-place (original audio, subtitles, chapters and other
     tracks kept, nothing re-encoded but the dub), written to the separate copy.
+    The dub is the default audio track and the new subtitles (``srt``, if any)
+    the default subtitle track, so the copy plays as dubbed on its own.
     Containers that cannot carry some original track fall back to the video
-    plus the dub only, with a warning, rather than failing the run.
+    plus the dub only, with a warning, rather than failing the run; the new
+    subtitles then go to ``fallback_srt`` so they are not lost.
     """
     try:
-        expected = media.mux_tracks(input_path, output_media, audio=dubbed, srt=None,
-                                    language=language, subtitle_codec="")
-        _verify_rewrite(input_path, output_media, expected, language, True, False)
+        expected = media.mux_tracks(input_path, output_media, audio=dubbed, srt=srt,
+                                    language=language, subtitle_codec=subtitle_codec or "",
+                                    subtitle_default=True)
+        _verify_rewrite(input_path, output_media, expected, language, True, srt is not None)
         summary["kept_original_tracks"] = True
+        summary["subtitles_embedded"] = srt is not None
     except MediaError as exc:
         summary["kept_original_tracks"] = False
+        summary["subtitles_embedded"] = False
+        where = ""
+        if srt is not None and fallback_srt:
+            if os.path.abspath(srt) != os.path.abspath(fallback_srt):  # --no-srt
+                shutil.copyfile(srt, fallback_srt)
+            summary["output_srt"] = os.path.abspath(fallback_srt)
+            where = f"; the subtitles are in {os.path.basename(fallback_srt)}"
         summary["warnings"].append(
             f"could not keep the original tracks in {os.path.basename(output_media)} "
-            f"({exc}); it has the video and the dub only")
+            f"({exc}); it has the video and the dub only{where}")
         media.mux(input_path, dubbed, output_media)
 
 
@@ -140,6 +154,18 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
         output_media, output_srt = _resolve_outputs(input_path, output_base, has_video)
         if os.path.abspath(input_path) == os.path.abspath(output_media):
             raise InputError("output would overwrite the input file; choose a different --output-base")
+    # The new subtitles go inside the dubbed copy when its container can carry a
+    # subtitle track. <base>.srt is written as well unless write_srt is off
+    # (--no-srt); it is always written when nothing else can hold the
+    # subtitles (subtitles only, audio-only input, other containers).
+    copy_subtitle_codec = None
+    fallback_srt = output_srt
+    if (not config.in_place and has_video and not config.subtitle_only
+            and not config.dub_only):
+        copy_subtitle_codec = media.IN_PLACE_SUBTITLE_CODEC.get(
+            os.path.splitext(input_path)[1].lower())
+        if copy_subtitle_codec and not config.write_srt:
+            output_srt = None
 
     source_lang = normalize_code(config.source_lang) if config.source_lang else None
     target_lang = normalize_code(config.target_lang) if config.target_lang else None
@@ -358,7 +384,10 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
             summary["mode"] = "full"
             return summary
         if has_video:
-            _write_dubbed_copy(input_path, dubbed, output_media, language, summary)
+            _write_dubbed_copy(input_path, dubbed, output_media, language, summary,
+                               srt=srt_path if copy_subtitle_codec else None,
+                               subtitle_codec=copy_subtitle_codec,
+                               fallback_srt=fallback_srt)
         else:
             # audio-only input has no video stream to copy; keep the dubbed audio
             shutil.copyfile(dubbed, output_media)

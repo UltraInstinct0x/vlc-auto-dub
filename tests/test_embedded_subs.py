@@ -12,7 +12,7 @@ from autodub import media
 from autodub.providers.base import Segment
 from autodub.providers.stt_fake import FakeSTT
 
-from _util import assert_monotonic_nonoverlapping, parse_srt
+from _util import assert_monotonic_nonoverlapping, embedded_cues, parse_srt
 from conftest import make_tone_video
 
 FAKES = ["--stt", "fake", "--tts", "fake", "--translate", "fake"]
@@ -127,7 +127,7 @@ def test_sidecar_translates_from_track_language(tmp_path, capsys):
     err = capsys.readouterr()
     assert code == 0, err.err
     assert "embedded subtitles" in err.out and "translation: yes" in err.out
-    cues = parse_srt(str(tmp_path / "out.srt"))
+    cues = embedded_cues(str(tmp_path / "out_dubbed.mkv"))
     assert_monotonic_nonoverlapping(cues)
     assert [c[2] for c in cues] == ["[tr] Hello there.", "[tr] - How are you?",
                                     "[tr] Fine, thanks."]
@@ -149,7 +149,7 @@ def test_falls_back_to_stt_without_a_track(tone_video, tmp_path, capsys):
     err = capsys.readouterr().err
     assert code == 0, err
     assert "no text subtitle track" in err
-    assert parse_srt(str(tmp_path / "o.srt"))[0][2] == "fake segment"
+    assert embedded_cues(str(tmp_path / "o_dubbed.mp4"))[0][2] == "fake segment"
 
 
 def test_untagged_track_needs_spoken_language_to_translate(tmp_path, capsys):
@@ -167,7 +167,7 @@ def test_untagged_track_used_when_spoken_language_given(tmp_path, capsys):
     code = cli.main([video, "--output-base", str(tmp_path / "o"), "--use-embedded-subs",
                      "--source-lang", "en", "--target-lang", "tr", *FAKES])
     assert code == 0, capsys.readouterr().err
-    assert parse_srt(str(tmp_path / "o.srt"))[0][2] == "[tr] Hello there."
+    assert embedded_cues(str(tmp_path / "o_dubbed.mkv"))[0][2] == "[tr] Hello there."
 
 
 # --- parsing edge cases ----------------------------------------------------
@@ -256,7 +256,7 @@ def test_track_without_speech_falls_back_and_keeps_user_language(tmp_path, capsy
     assert "no usable text" in err
     # The track's language (fr) must not leak into the fallback: the speech is
     # still en, so en -> fr translation must happen (a leak would make it fr -> fr).
-    assert parse_srt(str(tmp_path / "o.srt"))[0][2] == "[fr] fake segment"
+    assert embedded_cues(str(tmp_path / "o_dubbed.mkv"))[0][2] == "[fr] fake segment"
 
 
 def test_forced_only_track_is_not_used(tmp_path, capsys):

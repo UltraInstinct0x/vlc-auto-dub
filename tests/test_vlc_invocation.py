@@ -82,8 +82,11 @@ def test_extension_argv_runs_the_real_cli_sidecar(tone_video, tmp_path, capsys):
     before = hashlib.sha256(open(video, "rb").read()).hexdigest()
     code = cli.main(lua_args(video, "en", "tr", "both", False) + FAKES)
     assert code == 0, capsys.readouterr().err
-    assert os.path.exists(video.replace(".mp4", ".srt"))
-    assert os.path.exists(video.replace(".mp4", "_dubbed.mp4"))
+    dubbed = video.replace(".mp4", "_dubbed.mp4")
+    assert os.path.exists(dubbed)
+    kinds = [s["codec_type"] for s in media.probe_streams(dubbed)]
+    assert kinds.count("audio") == 2 and kinds.count("subtitle") == 1   # subs inside
+    assert os.path.exists(video.replace(".mp4", ".srt"))                # default: also beside
     assert hashlib.sha256(open(video, "rb").read()).hexdigest() == before
 
 

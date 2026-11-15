@@ -17,6 +17,7 @@ import main as cli
 from autodub import media
 from autodub.errors import MediaError
 
+from _util import embedded_cues, parse_srt
 from conftest import make_tone_video
 
 FAKES = ["--stt", "fake", "--tts", "fake", "--translate", "fake"]
@@ -69,7 +70,15 @@ def test_dubbed_copy_keeps_everything_and_defaults_to_the_dub(tmp_path, name, mo
 
     streams, chapters = _streams(str(tmp_path / f"o_dubbed{name[-4:]}"))
     kinds = [s["codec_type"] for s in streams]
-    assert kinds.count("video") == 1 and kinds.count("subtitle") == 1
+    subs = [s for s in streams if s["codec_type"] == "subtitle"]
+    assert kinds.count("video") == 1
+    if mode:   # dub only: just the original subtitles
+        assert len(subs) == 1 and not media.is_autodub_stream(subs[0])
+    else:      # plus the new ones, on by default; the original ones start off
+        assert len(subs) == 2 and media.is_autodub_stream(subs[1])
+        assert subs[1]["disposition"]["default"] == 1
+        assert subs[0]["disposition"]["default"] == 0
+    assert (tmp_path / "o.srt").exists() == (not mode)   # default still writes it
     audio = [s for s in streams if s["codec_type"] == "audio"]
     assert [a["tags"].get("language") for a in audio] == ["eng", "spa", "tur"]
     dub = audio[-1]
@@ -94,14 +103,38 @@ def test_falls_back_to_video_and_dub_when_tracks_cannot_be_kept(tmp_path, monkey
         raise MediaError("ffmpeg failed: codec not currently supported in container")
     monkeypatch.setattr(media, "mux_tracks", refuse)
     video = _rich_video(tmp_path)
-    code = cli.main([video, "--output-base", str(tmp_path / "o"), *FAKES])
+    # --no-srt: the subtitles were meant to go inside, so the fallback must
+    # still write them beside the copy rather than lose them.
+    code = cli.main([video, "--output-base", str(tmp_path / "o"), "--no-srt", *FAKES])
     assert code == 0
-    assert "could not keep the original tracks in o_dubbed.mp4" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "could not keep the original tracks in o_dubbed.mp4" in err
+    assert "the subtitles are in o.srt" in err
+    assert parse_srt(str(tmp_path / "o.srt"))[0][2] == "fake segment"
     streams, _ = _streams(str(tmp_path / "o_dubbed.mp4"))
     kinds = [s["codec_type"] for s in streams]
     # The old layout: video + the dub only (MP4 may add a chapter "data" track).
     assert kinds.count("video") == 1 and kinds.count("audio") == 1
     assert "subtitle" not in kinds
+
+
+def test_no_srt_flag(tmp_path, capsys):
+    video = _rich_video(tmp_path, "film.mkv")
+    code = cli.main([video, "--output-base", str(tmp_path / "o"), "--no-srt", *FAKES])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert not (tmp_path / "o.srt").exists()
+    assert "subtitles: embedded in the dubbed copy" in out
+    assert embedded_cues(str(tmp_path / "o_dubbed.mkv"))[0][2] == "fake segment"
+
+
+def test_no_srt_still_writes_it_when_the_copy_cannot_hold_subtitles(tmp_path, capsys):
+    base = make_tone_video(str(tmp_path / "base.mp4"))
+    avi = str(tmp_path / "clip.avi")
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", base, "-c:v", "mpeg4",
+                    "-c:a", "mp3", avi], check=True)
+    assert cli.main([avi, "--output-base", str(tmp_path / "o"), "--no-srt", *FAKES]) == 0
+    assert parse_srt(str(tmp_path / "o.srt"))[0][2] == "fake segment"
 
 
 def test_container_that_cannot_hold_the_tracks_still_produces_a_copy(tmp_path, capsys):
@@ -114,3 +147,5 @@ def test_container_that_cannot_hold_the_tracks_still_produces_a_copy(tmp_path, c
     assert code == 0, capsys.readouterr().err
     kinds = [s["codec_type"] for s in _streams(str(tmp_path / "o_dubbed.avi"))[0]]
     assert "video" in kinds and "audio" in kinds
+    # AVI cannot carry a subtitle track, so the new subtitles stay a separate .srt.
+    assert parse_srt(str(tmp_path / "o.srt"))[0][2] == "fake segment"
