@@ -157,13 +157,24 @@ local function to_uri(path)
     return "file://" .. path
 end
 
+-- Exit code recorded in the job's log, or nil while it is running. Each run
+-- truncates the log, so this never reports an earlier run's result.
+local function exit_code(j)
+    return (read_file(j.log) or ""):match("AUTODUB_EXIT=(%d+)")
+end
+
 -- What "Reopen video" should play: the MRL and extra item options.
 -- In place, the original file now holds the new tracks. Otherwise the dub is
 -- a separate copy beside it, and its subtitles have a different base name, so
 -- VLC would not pick them up by itself.
-function reopen_target(j, exists)
+-- Until the job has succeeded, whatever is there may be half-written or left
+-- over from an earlier run, so the original is reloaded.
+function reopen_target(j, exists, succeeded)
     exists = exists or file_exists
-    if j.in_place then
+    if succeeded == nil then
+        succeeded = exit_code(j) == "0"
+    end
+    if j.in_place or not succeeded then
         return j.uri, {}
     end
     local options = {}
