@@ -56,9 +56,10 @@ def test_argv_shapes():
     assert "--use-embedded-subs" not in lua_args(v, "en", "tr", "both", True)
     mixed = lua_args(v, "en", "tr", "both", True, dub_volume=0.75, original_volume=0.3)
     assert mixed[-4:] == ["--dub-volume", "0.75", "--original-volume", "0.3"]
-    # Defaults (1.0 / 0) add nothing, and subtitles-only never carries volumes.
-    assert "--dub-volume" not in lua_args(v, "en", "tr", "both", True, dub_volume=1.0,
-                                          original_volume=0)
+    # Defaults are passed too (they must win over the environment), but
+    # subtitles-only never carries volumes.
+    assert lua_args(v, "en", "tr", "both", True, dub_volume=1.0, original_volume=0)[-4:] == [
+        "--dub-volume", "1", "--original-volume", "0"]
     assert lua_args(v, "en", "tr", "subs", True, dub_volume=0.5, original_volume=0.3)[-1] \
         == "--subtitle-only"
     for argv in (lua_args(v, "auto", "tr", "both", True), lua_args(v, "en", "de", "subs", False),
@@ -92,10 +93,12 @@ def test_dropdown_default_from_config():
     script = (
         f"dofile({os.path.join(ROOT, 'transcribe.vlc.lua')!r})\n"
         "local levels = { {0, 'Off'}, {0.15, 'Quiet'}, {0.3, 'Medium'} }\n"
-        "local function first(p) local l = levels_with_default(levels, p)[1]\n"
-        "  return string.format('%g=%s/%d', l[1], l[2], #levels_with_default(levels, p)) end\n"
-        "io.write(first(nil), ' ', first(0.3), ' ', first('0.15'), ' ', first(0.42))\n"
+        "local function first(p) local l = levels_with_default(levels, p, 1)[1]\n"
+        "  return string.format('%g=%s/%d', l[1], l[2], #levels_with_default(levels, p, 1)) end\n"
+        "io.write(first(nil), ' ', first(0.3), ' ', first('0.15'), ' ', first(0.42), ' ',\n"
+        "  first(1.5), ' ', first(-1), ' ', first('loud'), ' ', first(0/0))\n"
     )
     out = subprocess.run([LUA, "-"], input=script, check=True, capture_output=True,
                          text=True).stdout
-    assert out.split() == ["0=Off/3", "0.3=Medium/3", "0.15=Quiet/3", "0.42=42%/4"]
+    assert out.split() == ["0=Off/3", "0.3=Medium/3", "0.15=Quiet/3", "0.42=42%/4",
+                           "0=Off/3", "0=Off/3", "0=Off/3", "0=Off/3"]   # rejected by the CLI

@@ -143,8 +143,8 @@ def test_start_runs_the_cli_with_dialog_defaults(tmp_path):
     assert [v[0] for v in values] == ["Auto-detect", "English (en)", "Dub + subtitles",
                                       "Off", "100%"]
     assert command.startswith("( '/usr/bin/python3' '/opt/autodub/main.py' ")
-    assert f"'{tmp_path}/my clip.mp4' '--in-place' '--target-lang' 'en' &" in command
-    assert "--original-volume" not in command and "--dub-volume" not in command
+    assert f"'{tmp_path}/my clip.mp4' '--in-place' '--target-lang' 'en' " \
+           "'--dub-volume' '1' '--original-volume' '0' &" in command
 
 
 def test_config_preselects_volumes(tmp_path):
