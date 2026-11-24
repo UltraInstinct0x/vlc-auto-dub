@@ -40,7 +40,8 @@ def _resolve_outputs(input_path: str, output_base: str, has_video: bool) -> tupl
 
 
 def _replace_in_place(input_path: str, audio: str | None, srt: str | None, language: str,
-                      subtitle_codec: str, input_hash: str, workdir: str) -> None:
+                      subtitle_codec: str, input_hash: str, workdir: str,
+                      replace_und: bool = False) -> None:
     """Add the tracks to ``input_path`` atomically.
 
     The new file is written next to the original (same filesystem, so the final
@@ -54,7 +55,8 @@ def _replace_in_place(input_path: str, audio: str | None, srt: str | None, langu
     os.close(fd)
     try:
         expected = media.mux_tracks(input_path, tmp, audio=audio, srt=srt,
-                                    language=language, subtitle_codec=subtitle_codec)
+                                    language=language, subtitle_codec=subtitle_codec,
+                                    replace_und=replace_und)
         _verify_rewrite(input_path, tmp, expected, language, audio is not None, srt is not None)
         if _sha256(input_path) != input_hash:
             raise MediaError("input file changed during processing; not replacing it")
@@ -76,7 +78,7 @@ def _verify_rewrite(original: str, rewritten: str, expected: dict, language: str
         raise MediaError(f"rewritten file has streams {counts}, expected {expected}; "
                          f"the original was left untouched")
     ours = [s for s in streams if media.is_autodub_stream(s)
-            and s.get("tags", {}).get("language") == language]
+            and media.stream_language(s) == language]
     want = ({"subtitle"} if added_subs else set()) | ({"audio"} if added_audio else set())
     if {s.get("codec_type") for s in ours} != want:
         raise MediaError("rewritten file is missing the labelled AutoDub tracks; "
@@ -173,14 +175,15 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
         detected_note = getattr(stt, "detected_language", None)
         progress(f"transcribed {len(raw_segments)} lines"
                  + (f" (language: {detected_note})" if detected_note else ""))
-        if not source_code and target_code:
-            # Source left on auto: translate from whatever the STT detected.
-            detected = getattr(stt, "detected_language", None)
-            if detected:
-                source_code = primary_subtag(detected)
-                source_lang = source_code
-                summary["detected_language"] = source_code
-            else:
+        detected = getattr(stt, "detected_language", None)
+        if not source_code and detected:
+            # Source left on auto: use what the STT detected, both to
+            # translate from and to tag the new tracks with.
+            source_code = primary_subtag(detected)
+            source_lang = source_code
+            summary["detected_language"] = source_code
+        if target_code:
+            if not source_code:
                 summary["warnings"].append(
                     "source language could not be detected; not translating")
             do_translate = bool(source_code and source_code != target_code)
@@ -238,7 +241,7 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
         if config.subtitle_only:
             if config.in_place:
                 _replace_in_place(input_path, None, srt_path, language, subtitle_codec,
-                                  input_hash_before, workdir)
+                                  input_hash_before, workdir, replace_und=not do_translate)
             summary["mode"] = "subtitle-only"
             return summary
         assert tts is not None  # set whenever we are not in subtitle-only mode
@@ -280,7 +283,7 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
 
         if config.in_place:
             _replace_in_place(input_path, dubbed, srt_path, language, subtitle_codec,
-                              input_hash_before, workdir)
+                              input_hash_before, workdir, replace_und=not do_translate)
             summary["dubbed_duration"] = round(dubbed_dur, 3)
             summary["source_duration"] = round(source_dur, 3)
             summary["mode"] = "full"

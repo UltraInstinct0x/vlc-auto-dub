@@ -220,6 +220,11 @@ IN_PLACE_SUBTITLE_CODEC = {
 }
 
 
+def stream_language(stream: dict) -> str:
+    """A stream's language tag; ``und`` when absent (Matroska does not store ``und``)."""
+    return stream.get("tags", {}).get("language") or "und"
+
+
 def is_autodub_stream(stream: dict) -> bool:
     # Matroska keeps the track name as "title"; MP4/MOV store it as "handler_name".
     tags = stream.get("tags", {})
@@ -228,7 +233,7 @@ def is_autodub_stream(stream: dict) -> bool:
 
 
 def mux_tracks(src: str, out: str, *, audio: str | None, srt: str | None,
-               language: str, subtitle_codec: str) -> dict:
+               language: str, subtitle_codec: str, replace_und: bool = False) -> dict:
     """Copy every stream of ``src`` to ``out`` and add the dub and subtitle tracks.
 
     Nothing from ``src`` is re-encoded. The new audio track (if ``audio``) is
@@ -236,13 +241,18 @@ def mux_tracks(src: str, out: str, *, audio: str | None, srt: str | None,
     added but not forced on. Earlier AutoDub tracks for the same ``language``
     are dropped so re-dubbing replaces them instead of piling up.
 
+    ``replace_und`` also drops AutoDub tracks with no known language: earlier
+    versions tagged untranslated dubs that way, so one in the spoken language
+    replaces them.
+
     Returns the stream counts the output is expected to have, for verification.
     """
     require_binary("ffmpeg")
     streams = probe_streams(src)
     dropped = [
         s for s in streams
-        if is_autodub_stream(s) and s.get("tags", {}).get("language") == language
+        if is_autodub_stream(s)
+        and (stream_language(s) == language or (replace_und and stream_language(s) == "und"))
     ]
     kept = [s for s in streams if s not in dropped]
     n_audio = sum(1 for s in kept if s.get("codec_type") == "audio")
