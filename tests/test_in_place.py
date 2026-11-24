@@ -211,3 +211,35 @@ def test_undetected_language_still_works_on_mkv(tmp_path, monkeypatch):
         assert summary["track_language"] == "und"
     ours = [s for s in media.probe_streams(video) if media.is_autodub_stream(s)]
     assert sorted(s["codec_type"] for s in ours) == ["audio", "subtitle"]
+
+
+# --- dubs tagged "und" by earlier versions ----------------------------------
+
+def _with_und_dub(tmp_path, ext, monkeypatch) -> str:
+    """A file holding the 'und' AutoDub tracks an earlier version wrote."""
+    import autodub.pipeline as pipeline
+
+    video = make_tone_video(str(tmp_path / f"clip.{ext}"))
+    with monkeypatch.context() as m:
+        m.setattr(pipeline, "track_language", lambda code: "und")
+        run(video, None, build_config(in_place=True, **FAKES))
+    ours = [s for s in media.probe_streams(video) if media.is_autodub_stream(s)]
+    assert {media.stream_language(s) for s in ours} == {"und"} and len(ours) == 2
+    return video
+
+
+@pytest.mark.parametrize("ext", ["mkv", "mp4"])
+def test_untranslated_run_replaces_und_tracks(tmp_path, ext, monkeypatch):
+    video = _with_und_dub(tmp_path, ext, monkeypatch)
+    run(video, None, build_config(in_place=True, **FAKES))
+    ours = [s for s in media.probe_streams(video) if media.is_autodub_stream(s)]
+    assert sorted(s["codec_type"] for s in ours) == ["audio", "subtitle"]
+    assert {media.stream_language(s) for s in ours} == {"eng"}
+
+
+def test_translated_run_keeps_und_tracks(tmp_path, monkeypatch):
+    """An 'und' dub is in the spoken language, so a Turkish one adds to it."""
+    video = _with_und_dub(tmp_path, "mp4", monkeypatch)
+    run(video, None, build_config(in_place=True, target_lang="tr", **FAKES))
+    ours = [s for s in media.probe_streams(video) if media.is_autodub_stream(s)]
+    assert sorted(media.stream_language(s) for s in ours) == ["tur", "tur", "und", "und"]

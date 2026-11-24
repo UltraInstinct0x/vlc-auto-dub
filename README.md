@@ -112,7 +112,9 @@ environment variables `AUTODUB_STT`, `AUTODUB_TRANSLATE`, `AUTODUB_TTS`,
 - Subtitles go in as a track in the format the container accepts: `mov_text`
   for MP4/M4V/MOV, SubRip for MKV. MP4 players usually enable the first
   subtitle track automatically; MKV leaves it off until selected.
-- Re-running for the same language **replaces** the earlier AutoDub tracks;
+- Re-running for the same language **replaces** the earlier AutoDub tracks (an
+  untranslated run also replaces ones with no language tag, which older versions
+  wrote);
   a different language adds another pair. Transcription always reads the
   original audio, never an earlier dub.
 - Safety: the result is written to a hidden temp file in the same folder,
