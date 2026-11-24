@@ -372,7 +372,7 @@ local function show_settings_dialog(video, uri, python, script)
     end
     local tags_cb = dlg:add_check_box("Sound tags: [laughter], [music]...", true,
         1, next_row(), 2, 1)
-    local embedded_cb = dlg:add_check_box("Use the video's subtitles (faster)", true,
+    local embedded_cb = dlg:add_check_box("Use the video's subtitles (faster)", false,
         1, next_row(), 2, 1)
 
     local r = next_row()

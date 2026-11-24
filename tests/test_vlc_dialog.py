@@ -142,8 +142,7 @@ def test_start_runs_the_cli_with_dialog_defaults(tmp_path):
     _w, values, command = run_dialog(tmp_path, "my clip.mp4")
     assert [v[0] for v in values] == ["Auto-detect", "English (en)", "Dub + subtitles"]
     assert command.startswith("( '/usr/bin/python3' '/opt/autodub/main.py' ")
-    assert f"'{tmp_path}/my clip.mp4' '--in-place' '--target-lang' 'en' " \
-           "'--use-embedded-subs' &" in command
+    assert f"'{tmp_path}/my clip.mp4' '--in-place' '--target-lang' 'en' &" in command
 
 
 # --- Reopen video ----------------------------------------------------------
