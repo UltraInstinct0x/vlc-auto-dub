@@ -16,6 +16,9 @@ class FakeSTT:
         self.text = text
         self.detected_language: str | None = None
 
+    def detect_language(self, sample_paths: list[str]) -> str | None:
+        return "en"
+
     def transcribe(self, audio_path: str, language: str | None) -> list[Segment]:
         from ..media import duration
 

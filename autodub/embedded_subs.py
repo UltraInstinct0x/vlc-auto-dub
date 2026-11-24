@@ -36,67 +36,97 @@ class EmbeddedTrack:
 
 
 def iso1(tag: str | None) -> str | None:
-    """Map a track language tag (``eng``, ``en``, ``pt-BR``) to a 2-letter code."""
+    """Map a language tag (``eng``, ``en``, ``pt-BR``) to a 2-letter code.
+
+    ``None`` means untagged (missing or ``und``). A 3-letter code we have no
+    2-letter form for (``tam``) is returned as it is: a known language we can't
+    name, which is not the same as no language.
+    """
     if not tag:
         return None
     tag = str(tag).strip().lower().replace("_", "-").split("-")[0]
-    if len(tag) == 2:
-        return tag
-    return _TO_ISO1.get(tag)
+    if tag in ("", "und"):
+        return None
+    return _TO_ISO1.get(tag, tag)
 
 
-def find_track(streams: list[dict], source_code: str | None,
-               target_code: str | None) -> EmbeddedTrack | None:
-    """Pick the best usable text subtitle track, or ``None``.
+def usable_tracks(streams: list[dict]) -> list[tuple[dict, EmbeddedTrack]]:
+    """Text subtitle tracks that carry the full dialogue, whatever their language.
 
-    Preference: a track already in the target language (no translation needed),
-    then one in the spoken language, then any. Within that, full tracks beat
-    SDH/hearing-impaired ones, and the default track beats the rest. Forced
-    tracks (only the foreign-language bits of a film) and our own AutoDub
-    tracks from an earlier run are skipped.
+    Forced tracks (only the foreign-language bits of a film) and our own AutoDub
+    tracks from an earlier run are left out.
     """
-    ranked = []
-    for order, s in enumerate(streams):
+    out = []
+    for s in streams:
         if s.get("codec_type") != "subtitle":
             continue
         if s.get("codec_name", "") not in TEXT_SUBTITLE_CODECS or media.is_autodub_stream(s):
             continue
-        disp = s.get("disposition", {})
-        if disp.get("forced"):
+        if s.get("disposition", {}).get("forced"):
             continue
         tags = s.get("tags", {})
-        lang = iso1(tags.get("language"))
-        if target_code and lang == target_code:
+        out.append((s, EmbeddedTrack(int(s["index"]), iso1(tags.get("language")),
+                                     s.get("codec_name", ""), str(tags.get("title", "")))))
+    return out
+
+
+def find_track(streams: list[dict], source_code: str | None, target_code: str | None,
+               *, allow_untagged: bool = True) -> EmbeddedTrack | None:
+    """Pick the best usable text subtitle track, or ``None``.
+
+    Preference: a track already in the target language (no translation needed),
+    then one in the spoken language, then, when the spoken language is known and
+    ``allow_untagged``, an untagged one (assumed to be in it). A track in any
+    other language is never used. Within that, full tracks beat
+    SDH/hearing-impaired ones, and the default track beats the rest.
+    """
+    source, target = iso1(source_code), iso1(target_code)
+    ranked = []
+    for order, (s, track) in enumerate(usable_tracks(streams)):
+        if target and track.language == target:
             lang_rank = 0
-        elif source_code and lang == source_code:
+        elif source and track.language == source:
             lang_rank = 1
-        else:
+        elif source and track.language is None and allow_untagged:
             lang_rank = 2
-        key = (lang_rank, 1 if disp.get("hearing_impaired") else 0,
-               0 if disp.get("default") else 1, order)
-        track = EmbeddedTrack(int(s["index"]), lang, s.get("codec_name", ""),
-                              str(tags.get("title", "")))
-        ranked.append((key, track))
+        else:
+            continue
+        disp = s.get("disposition", {})
+        ranked.append(((lang_rank, 1 if disp.get("hearing_impaired") else 0,
+                        0 if disp.get("default") else 1, order), track))
     if not ranked:
         return None
     return min(ranked, key=lambda kt: kt[0])[1]
 
 
 _TAG_RE = re.compile(r"<[^>]*>|\{[^}]*\}")             # HTML-ish and ASS override tags
-_SOUND_LINE_RE = re.compile(r"^\s*([\[(].*[\])]|[♪#\s]+)\s*$")  # [music], (sighs), ♪ ♪
+_SOUND_RE = re.compile(r"\[[^\]]*\]|\([^)]*\)")       # [music], (sighs)
+_SUNG_RE = re.compile(r"[♪♫][^♪♫]*[♪♫]")               # ♪ lyrics ♪, maybe over two lines
+_HASH_SUNG_RE = re.compile(r"^#.*#$|^[#\s]+$")          # # lyrics #
+_DASH_RE = re.compile(r"^[-‐–—]\s*(?=\D)")              # "- Hi" (but not "-5 degrees")
+_LABEL_RE = re.compile(r"^([^\W\d_][\w .'’&#-]{0,30}):\s*")  # JOHN:, MAN 2:
 _TS_RE = re.compile(r"(\d+):(\d{2}):(\d{2})[,.](\d{3})")
 
 
 def clean_text(text: str) -> str:
-    """Strip formatting and non-speech lines; return the speakable text on one line."""
+    """Strip formatting and anything not spoken; return the text on one line.
+
+    Sung lines (♪) go too: the dub then leaves the original singing in place.
+    """
     text = text.replace("\\N", "\n").replace("\\n", "\n").replace("\\h", " ")
     text = _TAG_RE.sub("", text)
+    text = _SOUND_RE.sub(" ", text)
+    text = _SUNG_RE.sub(" ", text)
     lines = []
     for line in text.splitlines():
-        if _SOUND_LINE_RE.match(line):
+        line = line.strip()
+        if "♪" in line or "♫" in line or _HASH_SUNG_RE.match(line):
             continue
-        line = re.sub(r"[\[(][^\])]*[\])]", "", line)  # inline (laughs) / [door closes]
-        line = line.replace("♪", "").strip()
+        line = _DASH_RE.sub("", line)
+        label = _LABEL_RE.match(line)
+        if label and label.group(1).isupper():
+            line = line[label.end():]
+        line = _DASH_RE.sub("", line).strip()
         if line:
             lines.append(line)
     return re.sub(r"\s+", " ", " ".join(lines)).strip()
