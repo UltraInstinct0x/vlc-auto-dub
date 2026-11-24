@@ -40,7 +40,8 @@ def _resolve_outputs(input_path: str, output_base: str, has_video: bool) -> tupl
 
 
 def _replace_in_place(input_path: str, audio: str | None, srt: str | None, language: str,
-                      subtitle_codec: str, input_hash: str, workdir: str) -> None:
+                      subtitle_codec: str, input_hash: str, workdir: str,
+                      replace_und: bool = False) -> None:
     """Add the tracks to ``input_path`` atomically.
 
     The new file is written next to the original (same filesystem, so the final
@@ -54,7 +55,8 @@ def _replace_in_place(input_path: str, audio: str | None, srt: str | None, langu
     os.close(fd)
     try:
         expected = media.mux_tracks(input_path, tmp, audio=audio, srt=srt,
-                                    language=language, subtitle_codec=subtitle_codec)
+                                    language=language, subtitle_codec=subtitle_codec,
+                                    replace_und=replace_und)
         _verify_rewrite(input_path, tmp, expected, language, audio is not None, srt is not None)
         if _sha256(input_path) != input_hash:
             raise MediaError("input file changed during processing; not replacing it")
@@ -120,6 +122,60 @@ def _write_dubbed_copy(input_path: str, dubbed: str, output_media: str, language
             f"could not keep the original tracks in {os.path.basename(output_media)} "
             f"({exc}); it has the video and the dub only{where}")
         media.mux(input_path, dubbed, output_media)
+
+
+def _spoken_language(stt, input_path: str, audio_index: int | None) -> str | None:
+    """Detect the spoken language from three short samples, or ``None``.
+
+    Samples from inside the film: the opening is often music or silence.
+    """
+    detect = getattr(stt, "detect_language", None)
+    if detect is None:
+        return None
+    progress("detecting the spoken language")
+    total = media.duration(input_path)
+    with tempfile.TemporaryDirectory(prefix="autodub-") as tmp:
+        samples = []
+        for i, part in enumerate((0.25, 0.5, 0.75) if total > 120 else (0.0,)):
+            path = os.path.join(tmp, f"sample_{i}.wav")
+            media.extract_audio(input_path, path, audio_index=audio_index,
+                                start=total * part, length=30.0)
+            samples.append(path)
+        try:
+            detected = detect(samples)
+        except AutoDubError as exc:
+            progress(str(exc))
+            return None
+    return primary_subtag(detected) if detected else None
+
+
+def _choose_embedded(stt, input_path: str, audio_index: int | None, source_code: str,
+                     target_code: str):
+    """``(track, None)``, or ``(None, why not)`` when the audio must be transcribed."""
+    streams = media.probe_streams(input_path)
+    usable = [track for _s, track in embedded_subs.usable_tracks(streams)]
+    instead = "transcribed the audio instead"
+    if not usable:
+        return None, f"no text subtitle track in the file; {instead}"
+    track = embedded_subs.find_track(streams, source_code, target_code)
+    if track is not None:
+        return track, None
+    if not source_code:
+        tagged = [t for t in usable if t.language]
+        if not tagged:
+            return None, (f"subtitle track #{usable[0].index} has no language tag; set the "
+                          f"spoken language to use it; {instead}")
+        source_code = _spoken_language(stt, input_path, audio_index) or ""
+        if not source_code:
+            return None, (f"could not tell which subtitle track is in the spoken language; "
+                          f"set the spoken language to use one; {instead}")
+        # Only what the user says vouches for an untagged track.
+        track = embedded_subs.find_track(streams, source_code, None, allow_untagged=False)
+        if track is not None:
+            return track, None
+    return None, (f"no text subtitle track in the spoken language ({source_code})"
+                  + (f" or in {target_code}" if target_code and target_code != source_code else "")
+                  + f"; {instead}")
 
 
 def run(input_path: str, output_base: str | None, config: Config) -> dict:
@@ -191,20 +247,17 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
     user_source = (source_lang, source_code, do_translate)
     embedded = None
     embedded_warning = None
+    not_spoken = False
     if config.use_embedded_subs:
-        embedded = embedded_subs.find_track(media.probe_streams(input_path),
-                                            source_code or None, target_code or None)
-        if embedded is None:
-            embedded_warning = "no text subtitle track in the file; transcribed the audio instead"
-        elif embedded.language is None and target_code and not source_code:
-            embedded_warning = (f"subtitle track #{embedded.index} has no language tag, so the "
-                                f"language to translate from is unknown; set the spoken language "
-                                f"to use it. Transcribed the audio instead")
-            embedded = None
-        elif embedded.language:
+        embedded, embedded_warning = _choose_embedded(stt, input_path, audio_index,
+                                                      source_code, target_code)
+        if embedded is not None and embedded.language:
             # The dub is made from the track's text, so translate from its language.
             source_code = source_lang = embedded.language
             do_translate = bool(target_code and source_code != target_code)
+            # A track already in the target language may not be what is spoken.
+            not_spoken = bool(target_code and source_code == target_code
+                              and user_source[1] != target_code)
 
     # TTS voice follows the target language (falling back to the source language,
     # then to the provider default); an explicit --voice always wins.
@@ -242,15 +295,20 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
         if embedded is not None:
             progress(f"reading subtitle track #{embedded.index} "
                      f"({embedded.language or 'no language tag'}) instead of transcribing")
-            raw_segments = embedded_subs.extract_segments(input_path, embedded, workdir)
+            problem = "has no usable text"
+            try:
+                raw_segments = embedded_subs.extract_segments(input_path, embedded, workdir)
+            except MediaError as exc:
+                problem = f"could not be read ({exc})"
             if raw_segments:
                 summary["providers"]["stt"] = f"embedded subtitles (track #{embedded.index})"
                 summary["subtitle_track"] = embedded.index
                 progress(f"read {len(raw_segments)} lines from the subtitle track")
             else:
-                summary["warnings"].append(f"subtitle track #{embedded.index} has no usable "
-                                           f"text; transcribed the audio instead")
+                summary["warnings"].append(f"subtitle track #{embedded.index} {problem}; "
+                                           f"transcribed the audio instead")
                 source_lang, source_code, do_translate = user_source
+                not_spoken = False
                 raw_segments = None
         if raw_segments is None:
             progress(f"transcribing ({config.stt}"
@@ -325,7 +383,8 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
         if config.subtitle_only:
             if config.in_place:
                 _replace_in_place(input_path, None, srt_path, language, subtitle_codec,
-                                  input_hash_before, workdir)
+                                  input_hash_before, workdir,
+                                  replace_und=not do_translate and not not_spoken)
             summary["mode"] = "subtitle-only"
             return summary
         assert tts is not None  # set whenever we are not in subtitle-only mode
@@ -378,7 +437,8 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
 
         if config.in_place:
             _replace_in_place(input_path, dubbed, srt_path, language, subtitle_codec,
-                              input_hash_before, workdir)
+                              input_hash_before, workdir,
+                                  replace_und=not do_translate and not not_spoken)
             summary["dubbed_duration"] = round(dubbed_dur, 3)
             summary["source_duration"] = round(source_dur, 3)
             summary["mode"] = "full"

@@ -115,16 +115,20 @@ def probe_streams(path: str) -> list[dict]:
 
 
 def extract_audio(video: str, out_wav: str, sample_rate: int = SAMPLE_RATE,
-                  audio_index: int | None = None) -> None:
+                  audio_index: int | None = None, start: float | None = None,
+                  length: float | None = None) -> None:
     """Extract a mono PCM WAV track from ``video``.
 
     ``audio_index`` selects the n-th audio stream; by default ffmpeg picks one.
+    ``start``/``length`` (seconds) extract only that part.
     """
     require_binary("ffmpeg")
     select = ["-map", f"0:a:{audio_index}"] if audio_index is not None else []
+    seek = ["-ss", f"{start:.3f}"] if start else []
+    limit = ["-t", f"{length:.3f}"] if length is not None else []
     _run(
         [
-            "ffmpeg", "-y", "-v", "error", "-i", video, *select,
+            "ffmpeg", "-y", "-v", "error", *seek, "-i", video, *select, *limit,
             "-vn", "-ac", "1", "-ar", str(sample_rate),
             "-acodec", "pcm_s16le", out_wav,
         ]
@@ -203,12 +207,16 @@ def mix_segment(dub_wav: str, out_wav: str, *, dub_volume: float = 1.0,
     sum from clipping without changing the loudness of quiet passages.
     """
     require_binary("ffmpeg")
+    # Float, so a sum or gain above full scale reaches the limiter unclipped.
+    fmt = f"aformat=sample_fmts=flt:sample_rates={sample_rate}:channel_layouts=mono"
     if original_wav is None or original_volume <= 0:
-        graph = f"[0:a]volume={dub_volume:.4f},alimiter=limit=0.97:level=false[out]"
+        graph = f"[0:a]{fmt},volume={dub_volume:.4f},alimiter=limit=0.97:level=false[out]"
         inputs = ["-i", dub_wav]
     else:
-        graph = (f"[0:a]volume={dub_volume:.4f}[d];[1:a]volume={original_volume:.4f}[o];"
-                 f"[d][o]amix=inputs=2:duration=first:normalize=false,"
+        # Not amix: without its normalize=false (ffmpeg 4.4+) it rescales the gains.
+        graph = (f"[0:a]{fmt},volume={dub_volume:.4f}[d];"
+                 f"[1:a]{fmt},volume={original_volume:.4f},apad[o];"
+                 f"[d][o]amerge=inputs=2,pan=mono|c0=c0+c1,"
                  f"alimiter=limit=0.97:level=false[out]")
         inputs = ["-i", dub_wav, "-i", original_wav]
     _run(
@@ -260,7 +268,8 @@ def is_autodub_stream(stream: dict) -> bool:
 
 
 def mux_tracks(src: str, out: str, *, audio: str | None, srt: str | None,
-               language: str, subtitle_codec: str, subtitle_default: bool = False) -> dict:
+               language: str, subtitle_codec: str, subtitle_default: bool = False,
+               replace_und: bool = False) -> dict:
     """Copy every stream of ``src`` to ``out`` and add the dub and subtitle tracks.
 
     Nothing from ``src`` is re-encoded. The new audio track (if ``audio``) is
@@ -269,13 +278,18 @@ def mux_tracks(src: str, out: str, *, audio: str | None, srt: str | None,
     subtitle track (the others then lose that flag). Earlier AutoDub tracks for the same ``language``
     are dropped so re-dubbing replaces them instead of piling up.
 
+    ``replace_und`` also drops AutoDub tracks with no known language: earlier
+    versions tagged untranslated dubs that way, so one in the spoken language
+    replaces them.
+
     Returns the stream counts the output is expected to have, for verification.
     """
     require_binary("ffmpeg")
     streams = probe_streams(src)
     dropped = [
         s for s in streams
-        if is_autodub_stream(s) and stream_language(s) == language
+        if is_autodub_stream(s)
+        and (stream_language(s) == language or (replace_und and stream_language(s) == "und"))
     ]
     kept = [s for s in streams if s not in dropped]
     n_audio = sum(1 for s in kept if s.get("codec_type") == "audio")

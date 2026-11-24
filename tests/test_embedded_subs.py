@@ -74,13 +74,14 @@ def stt_must_not_run(monkeypatch):
 
 def test_iso1():
     assert es.iso1("eng") == "en" and es.iso1("ger") == "de" and es.iso1("deu") == "de"
+    assert es.iso1("tam") == "tam"      # known to be something else, not untagged
     assert es.iso1("pt-BR") == "pt" and es.iso1("und") is None and es.iso1(None) is None
 
 
 def test_clean_text_drops_formatting_and_sound_lines():
     assert es.clean_text("<i>Hello</i>") == "Hello"
     assert es.clean_text("{\\an8}Top\\Nline") == "Top line"
-    assert es.clean_text("[door slams]\n- How are you?") == "- How are you?"
+    assert es.clean_text("[door slams]\n- How are you?") == "How are you?"
     assert es.clean_text("♪ ♪") == ""
     assert es.clean_text("I (laughs) know") == "I know"
 
@@ -113,7 +114,9 @@ def test_find_track_preference():
     ]
     assert es.find_track(streams, None, "es").index == 5    # already in the target
     assert es.find_track(streams, "en", "tr").index == 4    # spoken language, non-SDH
-    assert es.find_track(streams, None, "tr").index == 4    # any; AutoDub/bitmap ignored
+    assert es.find_track(streams, "eng", None).index == 4   # 3-letter codes match too
+    assert es.find_track(streams, None, "tr") is None       # AutoDub/bitmap ignored
+    assert es.find_track(streams, "fr", "tr") is None       # never a third language
     assert es.find_track(streams[:2], None, None) is None
 
 
@@ -129,7 +132,7 @@ def test_sidecar_translates_from_track_language(tmp_path, capsys):
     assert "embedded subtitles" in err.out and "translation: yes" in err.out
     cues = embedded_cues(str(tmp_path / "out_dubbed.mkv"))
     assert_monotonic_nonoverlapping(cues)
-    assert [c[2] for c in cues] == ["[tr] Hello there.", "[tr] - How are you?",
+    assert [c[2] for c in cues] == ["[tr] Hello there.", "[tr] How are you?",
                                     "[tr] Fine, thanks."]
     assert os.path.exists(tmp_path / "out_dubbed.mkv")
 
@@ -192,6 +195,13 @@ def test_clean_text_more_cases():
     assert es.clean_text("A\\hB") == "A B"
     assert es.clean_text("(whispers)") == ""
     assert es.clean_text("[MAN] Hi") == "Hi"
+    assert es.clean_text("(laughs) Okay (sighs)") == "Okay"
+    assert es.clean_text("(sighs\nheavily) Okay") == "Okay"
+    assert es.clean_text("JOHN: Hi\n- MAN 2: Hello") == "Hi Hello"
+    assert es.clean_text("Listen: it is 12:30, -5 degrees") == "Listen: it is 12:30, -5 degrees"
+    assert es.clean_text("-5 degrees") == "-5 degrees"
+    assert es.clean_text("♪ la la\nla la ♪\nBye") == "Bye"
+    assert es.clean_text("♪ la la") == "" and es.clean_text("# la la #") == ""
     assert es.clean_text("  spaced   out \n  text ") == "spaced out text"
 
 
@@ -206,7 +216,11 @@ def test_find_track_honours_default_and_order():
     streams = [_stream(2, lang="eng"), _stream(3, lang="eng", default=1),
                _stream(4, "webvtt"), _stream(5, "dvd_subtitle", "eng")]
     assert es.find_track(streams, "en", None).index == 3
-    assert es.find_track([streams[2], streams[3]], None, None).index == 4
+    assert es.find_track([streams[2], streams[3]], "en", None).index == 4   # untagged
+    assert es.find_track([streams[2]], "en", None, allow_untagged=False) is None
+    assert es.find_track([streams[2]], None, None) is None
+    assert es.find_track([_stream(6, lang="tam")], "en", "tr") is None      # not untagged
+    assert es.find_track([_stream(6, lang="tam")], "tam", "tr").index == 6
     assert es.find_track([streams[3]], None, None) is None
 
 
@@ -231,7 +245,7 @@ def test_ass_track_is_converted(tmp_path, capsys):
                      "--use-embedded-subs", *FAKES])
     assert code == 0, capsys.readouterr().err
     assert [c[2] for c in parse_srt(str(tmp_path / "o.srt"))] == [
-        "Hello there.", "- How are you?", "Fine, thanks."]
+        "Hello there.", "How are you?", "Fine, thanks."]
 
 
 @pytest.mark.usefixtures("stt_must_not_run")
@@ -292,3 +306,64 @@ def test_dub_only(tmp_path, capsys):
     assert code == 0, capsys.readouterr().err
     assert os.path.exists(tmp_path / "o_dubbed.mkv")
     assert not os.path.exists(tmp_path / "o.srt")
+
+
+def test_unrelated_track_is_not_used_without_a_target(tmp_path, capsys):
+    """Spanish subtitles on an English film: no Spanish-voiced 'untranslated' dub."""
+    video = _with_subs(tmp_path, "spanish.mkv", "srt", "spa")
+    code = cli.main([video, "--in-place", "--use-embedded-subs", *FAKES])
+    err = capsys.readouterr().err
+    assert code == 0, err
+    assert "no text subtitle track in the spoken language (en)" in err
+    ours = [s for s in media.probe_streams(video) if media.is_autodub_stream(s)]
+    assert {media.stream_language(s) for s in ours} == {"eng"}
+
+
+def test_third_language_is_not_used_when_translating(tmp_path, capsys):
+    video = _with_subs(tmp_path, "spanish.mkv", "srt", "spa")
+    code = cli.main([video, "--output-base", str(tmp_path / "o"), "--subtitle-only",
+                     "--use-embedded-subs", "--target-lang", "tr", *FAKES])
+    err = capsys.readouterr().err
+    assert code == 0, err
+    assert "in the spoken language (en) or in tr" in err
+    assert parse_srt(str(tmp_path / "o.srt"))[0][2] == "[tr] fake segment"
+
+
+def test_unknown_language_tag_is_not_treated_as_untagged(tmp_path, capsys):
+    video = _with_subs(tmp_path, "tamil.mkv", "srt", "tam")
+    code = cli.main([video, "--output-base", str(tmp_path / "o"), "--subtitle-only",
+                     "--use-embedded-subs", "--source-lang", "en", "--target-lang", "tr",
+                     *FAKES])
+    err = capsys.readouterr().err
+    assert code == 0, err
+    assert "no text subtitle track in the spoken language (en)" in err
+
+
+def test_failed_language_detection_falls_back(tmp_path, capsys, monkeypatch):
+    from autodub.errors import ProviderError
+
+    def fail(self, samples):
+        raise ProviderError("no model")
+    monkeypatch.setattr(FakeSTT, "detect_language", fail)
+    video = _with_subs(tmp_path, "film.mkv", "srt", "eng")
+    code = cli.main([video, "--output-base", str(tmp_path / "o"), "--subtitle-only",
+                     "--use-embedded-subs", *FAKES])
+    err = capsys.readouterr().err
+    assert code == 0, err
+    assert "could not tell which subtitle track" in err
+
+
+def test_unreadable_track_falls_back_and_keeps_user_language(tmp_path, capsys, monkeypatch):
+    from autodub.errors import MediaError
+
+    def fail(*_a):
+        raise MediaError("ffmpeg failed: bad packet")
+    monkeypatch.setattr(es, "extract_segments", fail)
+    video = _with_subs(tmp_path, "bad.mkv", "srt", "fre")
+    code = cli.main([video, "--output-base", str(tmp_path / "o"), "--subtitle-only",
+                     "--use-embedded-subs", "--source-lang", "en", "--target-lang", "fr",
+                     *FAKES])
+    err = capsys.readouterr().err
+    assert code == 0, err
+    assert "could not be read (ffmpeg failed: bad packet)" in err
+    assert parse_srt(str(tmp_path / "o.srt"))[0][2] == "[fr] fake segment"

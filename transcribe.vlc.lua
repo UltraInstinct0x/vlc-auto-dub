@@ -46,7 +46,8 @@ local MODES = {
 }
 
 -- How loud the original speech stays under the dub (0 = the dub replaces it),
--- and the dub's own loudness. { gain, label }; the first entry is the default
+-- and the dub's own loudness. { gain, label }; ascending after the first,
+-- since VLC preselects that one. The first entry is the default
 -- unless config.lua sets original_volume / dub_volume.
 local ORIGINAL_LEVELS = {
     { 0, "Off" },
@@ -57,8 +58,8 @@ local ORIGINAL_LEVELS = {
 
 local DUB_LEVELS = {
     { 1.0, "100%" },
-    { 0.75, "75%" },
     { 0.5, "50%" },
+    { 0.75, "75%" },
     { 1.25, "125%" },
     { 1.5, "150%" },
 }
@@ -144,11 +145,13 @@ function build_args(video, source, target, mode, in_place, sound_tags, use_embed
         table.insert(args, "--use-embedded-subs")
     end
     if mode ~= "subs" then
-        if dub_volume and dub_volume ~= 1 then
+        -- Always passed, even at their defaults, so the dialog's choice wins over
+        -- AUTODUB_DUB_VOLUME / AUTODUB_ORIGINAL_VOLUME in VLC's environment.
+        if dub_volume then
             table.insert(args, "--dub-volume")
             table.insert(args, gain_arg(dub_volume))
         end
-        if original_volume and original_volume > 0 then
+        if original_volume then
             table.insert(args, "--original-volume")
             table.insert(args, gain_arg(original_volume))
         end
@@ -158,10 +161,11 @@ end
 
 -- ``levels`` with the entry for ``preferred`` moved to the front (VLC's
 -- dropdowns preselect the first value). A gain that matches no preset is
--- offered first, labelled with its percentage.
-function levels_with_default(levels, preferred)
+-- offered first, labelled with its percentage. One the CLI would reject (outside
+-- 0..maximum) is ignored.
+function levels_with_default(levels, preferred, maximum)
     local gain = tonumber(preferred)
-    if gain == nil then
+    if gain == nil or not (gain >= 0 and gain <= maximum) then
         return levels
     end
     local out, found = {}, nil
@@ -222,6 +226,12 @@ local function to_uri(path)
     return "file://" .. path
 end
 
+-- Exit code recorded in the job's log, or nil while it is running. Each run
+-- truncates the log, so this never reports an earlier run's result.
+local function exit_code(j)
+    return (read_file(j.log) or ""):match("AUTODUB_EXIT=(%d+)")
+end
+
 -- What "Reopen video" should play: the MRL and extra item options.
 -- In place, the original file now holds the new tracks. Otherwise the dub is a
 -- separate copy beside it. An .mp4/.m4v/.mov/.mkv copy carries the new
@@ -229,9 +239,14 @@ end
 -- input and subtitles-only runs, and its base name differs from the copy's, so
 -- VLC would not pick it up by itself. A leftover .srt from an older run next
 -- to a copy that has its subtitles inside is ignored.
-function reopen_target(j, exists)
+-- Until the job has succeeded, whatever is there may be half-written or left
+-- over from an earlier run, so the original is reloaded.
+function reopen_target(j, exists, succeeded)
     exists = exists or file_exists
-    if j.in_place then
+    if succeeded == nil then
+        succeeded = exit_code(j) == "0"
+    end
+    if j.in_place or not succeeded then
         return j.uri, {}
     end
     local copy = nil
@@ -425,13 +440,13 @@ local function show_settings_dialog(video, uri, python, script, cfg)
     end
 
     local original_dd = dropdown("Original voices:")
-    local originals = levels_with_default(ORIGINAL_LEVELS, cfg.original_volume)
+    local originals = levels_with_default(ORIGINAL_LEVELS, cfg.original_volume, 1)
     for i, level in ipairs(originals) do
         original_dd:add_value(level[2], i)
     end
 
     local dub_dd = dropdown("Dub volume:")
-    local dubs = levels_with_default(DUB_LEVELS, cfg.dub_volume)
+    local dubs = levels_with_default(DUB_LEVELS, cfg.dub_volume, 3)
     for i, level in ipairs(dubs) do
         dub_dd:add_value(level[2], i)
     end
@@ -444,7 +459,7 @@ local function show_settings_dialog(video, uri, python, script, cfg)
     end
     local tags_cb = dlg:add_check_box("Sound tags: [laughter], [music]...", true,
         1, next_row(), 2, 1)
-    local embedded_cb = dlg:add_check_box("Use the video's subtitles (faster)", true,
+    local embedded_cb = dlg:add_check_box("Use the video's subtitles (faster)", false,
         1, next_row(), 2, 1)
 
     local r = next_row()
