@@ -134,19 +134,21 @@ their timing, so the dub is built from them and STT is skipped entirely
 (the sample video: ~12 s instead of ~2 min).
 
 - **Track choice**: a track already in `--target-lang` (no translation needed),
-  then one in `--source-lang`, then any. Full tracks beat SDH/hearing-impaired
-  ones, and the default track beats the rest. **Forced** tracks and AutoDub
-  tracks from an earlier `--in-place` run are never used. Bitmap tracks (PGS,
-  VobSub, DVB) hold pictures, not text, and are ignored.
+  else one in the spoken language: `--source-lang`, or the language detected from
+  a few short samples (Whisper `base`, one-time ~145 MB download). An untagged
+  track is used only when `--source-lang` is set; a track in any other language
+  never is. Full tracks beat SDH/hearing-impaired ones, and the default track
+  beats the rest. **Forced** tracks and AutoDub tracks from an earlier
+  `--in-place` run are never used. Bitmap tracks (PGS, VobSub, DVB) hold
+  pictures, not text, and are ignored.
 - **Language**: translation runs from the track's language tag, and the TTS
-  voice follows it. An untagged track is used only when `--source-lang` is set
-  or no translation is requested.
-- **Cleaning**: styling (`<i>`, `{\an8}`) and non-speech lines (`[door slams]`,
-  `(laughs)`, `♪`) are removed so they are not spoken; overlapping cues are
-  merged or trimmed into a non-overlapping timeline.
-- **Fallback**: no usable track, an untagged track when the translation source
-  is unknown, or a track with no speakable text → the audio is transcribed as
-  usual and a warning says why.
+  voice follows it.
+- **Cleaning**: styling (`<i>`, `{\an8}`), sounds (`[door slams]`, `(laughs)`),
+  sung lines (`♪ ... ♪`), speaker labels (`JOHN:`) and dialogue dashes are
+  removed so they are not spoken; overlapping cues are merged or trimmed into a
+  non-overlapping timeline.
+- **Fallback**: no suitable track, a track that cannot be read, or one with no
+  speakable text → the audio is transcribed as usual and a warning says why.
 
 ### Recognition, timing and sound tags
 
@@ -226,9 +228,10 @@ are sent.
 - **Spoken language**: Auto-detect or a fixed language.
 - **Translate to**: a target language, or no translation.
 - **Produce**: Dub + subtitles, Dub only, or Subtitles only.
-- **Use the video's own subtitles if it has them** (on by default): runs
-  `--use-embedded-subs`, skipping transcription when a text subtitle track
-  exists.
+- **Use the video's subtitles (faster)** (off by default): runs
+  `--use-embedded-subs`, skipping transcription when the file has a text subtitle
+  track in the spoken or target language. Subtitles are often condensed and
+  timed for reading, so the dub may follow the speech less closely.
 - **Add tracks into this file** (on by default for MP4/M4V/MOV/MKV): runs
   `--in-place`. Untick it to write `<base>_dubbed<ext>` / `<base>.srt` instead.
 

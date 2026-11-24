@@ -17,6 +17,8 @@ from ..progress import progress
 from .base import Segment
 
 DEFAULT_MODEL = "large-v3"
+# Telling which language is spoken needs far less than transcribing it.
+DETECT_MODEL = "base"
 
 # Cue shaping (readable subtitles; standard broadcast-ish limits).
 PAUSE_SPLIT = 0.7      # a silence this long between words starts a new cue
@@ -150,6 +152,41 @@ class WhisperSTT:
             if w.get("word", "").strip()
         ]
         return words_to_cues(words)
+
+    def detect_language(self, sample_paths: list[str]) -> str | None:
+        """The language most likely spoken over all samples (30 s of each is used)."""
+        from ..media import read_samples
+
+        totals: dict[str, float] = {}
+        try:
+            if self.backend == "mlx":
+                probabilities = self._detect_mlx([read_samples(p) for p in sample_paths])
+            else:
+                from faster_whisper import WhisperModel
+
+                model = WhisperModel(DETECT_MODEL, device=self.device,
+                                     compute_type=self.compute_type)
+                probabilities = [dict(model.detect_language(read_samples(p))[2])
+                                 for p in sample_paths]
+        except Exception as exc:  # noqa: BLE001 - surfaced as a clear provider error
+            raise ProviderError(f"language detection failed: {exc}") from exc
+        for probs in probabilities:
+            for code, p in probs.items():
+                totals[code] = totals.get(code, 0.0) + float(p)
+        return max(totals, key=totals.get) if totals else None
+
+    def _detect_mlx(self, clips) -> list[dict]:
+        import mlx.core as mx
+        from mlx_whisper.audio import N_FRAMES, N_SAMPLES, log_mel_spectrogram, pad_or_trim
+        from mlx_whisper.load_models import load_model
+
+        model = load_model(mlx_repo(DETECT_MODEL), dtype=mx.float16)
+        out = []
+        for clip in clips:
+            mel = log_mel_spectrogram(clip, n_mels=model.dims.n_mels, padding=N_SAMPLES)
+            mel = pad_or_trim(mel, N_FRAMES, axis=-2).astype(mx.float16)
+            out.append(model.detect_language(mel)[1])
+        return out
 
     def _load(self):
         if self._model is None:
