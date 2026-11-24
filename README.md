@@ -57,7 +57,9 @@ subtitle track, like `--in-place` but in a copy, and the subtitles also as
 it is still written when they cannot go inside: `--subtitle-only`, audio-only
 input (`<BASE>_dubbed.wav`), containers other than MP4/M4V/MOV/MKV, or a
 container that cannot carry some original track (that copy falls back to the
-video plus the dub, with a warning).
+video plus the dub, with a warning). Data tracks the container cannot carry
+(timecode, phone sensor data) are left out, with a warning. An existing
+`<BASE>.srt` is never deleted.
 
 ```bash
 python main.py INPUT --in-place [options]

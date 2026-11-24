@@ -11,7 +11,7 @@ import os
 import shutil
 import subprocess
 
-from .errors import DependencyError, MediaError
+from .errors import ContainerError, DependencyError, MediaError
 
 SAMPLE_RATE = 16000
 
@@ -55,7 +55,9 @@ def _run(cmd: list[str], *, capture: bool = True) -> subprocess.CompletedProcess
     except subprocess.CalledProcessError as exc:
         tail = (exc.stderr or "").strip().splitlines()
         detail = " | ".join(tail[-3:]) if tail else "no stderr"
-        raise MediaError(f"{cmd[0]} failed: {detail}") from exc
+        error = MediaError(f"{cmd[0]} failed: {detail}")
+        error.stderr = exc.stderr or ""  # the cause may be above the tail
+        raise error from exc
     return result
 
 
@@ -104,7 +106,7 @@ def probe_streams(path: str) -> list[dict]:
         [
             "ffprobe", "-v", "error", "-show_entries",
             "stream=index,codec_type,codec_name:stream_tags=language,title,handler_name"
-            ":stream_disposition=default,forced,hearing_impaired",
+            ":stream_disposition",
             "-of", "json", path,
         ]
     ).stdout
@@ -267,9 +269,24 @@ def is_autodub_stream(stream: dict) -> bool:
                for key in ("title", "handler_name"))
 
 
+# What ffmpeg says when a container cannot hold a stream.
+_CONTAINER_ERRORS = ("not currently supported in container", "could not find tag for codec",
+                     "are supported for", "unsupported codec")
+
+
+def _kept_flags(stream: dict) -> str:
+    """A stream's disposition flags without ``default``, as an ffmpeg value.
+
+    Spelled out rather than ``-default``, which older ffmpeg versions may not
+    apply to the flags copied from the input.
+    """
+    flags = [k for k, v in stream.get("disposition", {}).items() if v and k != "default"]
+    return "+".join(flags) or "0"
+
+
 def mux_tracks(src: str, out: str, *, audio: str | None, srt: str | None,
                language: str, subtitle_codec: str, subtitle_default: bool = False,
-               replace_und: bool = False) -> dict:
+               replace_und: bool = False, keep_data: bool = True) -> dict:
     """Copy every stream of ``src`` to ``out`` and add the dub and subtitle tracks.
 
     Nothing from ``src`` is re-encoded. The new audio track (if ``audio``) is
@@ -282,6 +299,10 @@ def mux_tracks(src: str, out: str, *, audio: str | None, srt: str | None,
     versions tagged untranslated dubs that way, so one in the spoken language
     replaces them.
 
+    ``keep_data=False`` leaves out data streams (timecodes, phone sensor tracks),
+    which some containers cannot carry. Raises :class:`ContainerError` when the
+    output container cannot carry a stream.
+
     Returns the stream counts the output is expected to have, for verification.
     """
     require_binary("ffmpeg")
@@ -292,8 +313,11 @@ def mux_tracks(src: str, out: str, *, audio: str | None, srt: str | None,
         and (stream_language(s) == language or (replace_und and stream_language(s) == "und"))
     ]
     kept = [s for s in streams if s not in dropped]
-    n_audio = sum(1 for s in kept if s.get("codec_type") == "audio")
-    n_subs = sum(1 for s in kept if s.get("codec_type") == "subtitle")
+    if not keep_data:
+        kept = [s for s in kept if s.get("codec_type") != "data"]
+    kept_audio = [s for s in kept if s.get("codec_type") == "audio"]
+    kept_subs = [s for s in kept if s.get("codec_type") == "subtitle"]
+    n_audio, n_subs = len(kept_audio), len(kept_subs)
 
     cmd = ["ffmpeg", "-y", "-v", "error", "-i", src]
     inputs = 1
@@ -306,6 +330,8 @@ def mux_tracks(src: str, out: str, *, audio: str | None, srt: str | None,
         sub_input = inputs
 
     cmd += ["-map", "0"]
+    if not keep_data:
+        cmd += ["-map", "-0:d?"]
     for s in dropped:
         cmd += ["-map", f"-0:{s['index']}"]
     if audio_input is not None:
@@ -318,8 +344,8 @@ def mux_tracks(src: str, out: str, *, audio: str | None, srt: str | None,
     label = f"{AUTODUB_TITLE} ({language})"
     if audio_input is not None:
         cmd += [f"-c:a:{n_audio}", "aac", f"-b:a:{n_audio}", "160k"]
-        for i in range(n_audio):
-            cmd += [f"-disposition:a:{i}", "0"]
+        for i, s in enumerate(kept_audio):
+            cmd += [f"-disposition:a:{i}", _kept_flags(s)]
         cmd += [
             f"-disposition:a:{n_audio}", "default",
             f"-metadata:s:a:{n_audio}", f"language={language}",
@@ -328,8 +354,8 @@ def mux_tracks(src: str, out: str, *, audio: str | None, srt: str | None,
         ]
     if sub_input is not None:
         if subtitle_default:
-            for i in range(n_subs):
-                cmd += [f"-disposition:s:{i}", "0"]
+            for i, s in enumerate(kept_subs):
+                cmd += [f"-disposition:s:{i}", _kept_flags(s)]
         cmd += [
             f"-c:s:{n_subs}", subtitle_codec,
             f"-disposition:s:{n_subs}", "default" if subtitle_default else "0",
@@ -337,7 +363,13 @@ def mux_tracks(src: str, out: str, *, audio: str | None, srt: str | None,
             f"-metadata:s:s:{n_subs}", f"title={label}",
             f"-metadata:s:s:{n_subs}", f"handler_name={label}",
         ]
-    _run(cmd + [out])
+    try:
+        _run(cmd + [out])
+    except MediaError as exc:
+        for line in getattr(exc, "stderr", "").splitlines():
+            if any(hint in line.lower() for hint in _CONTAINER_ERRORS):
+                raise ContainerError(f"ffmpeg failed: {line.strip()}") from exc
+        raise
 
     expected: dict[str, int] = {}
     for s in kept:

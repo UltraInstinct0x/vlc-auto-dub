@@ -19,3 +19,7 @@ class ProviderError(AutoDubError):
 
 class MediaError(AutoDubError):
     """ffmpeg/ffprobe failed."""
+
+
+class ContainerError(MediaError):
+    """The output container cannot carry one of the streams."""
