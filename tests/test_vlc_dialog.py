@@ -164,19 +164,37 @@ def test_reopen_separate_files_plays_the_dubbed_copy_with_its_subtitles(tmp_path
     # .avi cannot take tracks in place, so the dub is written beside it.
     (tmp_path / "old clip_dubbed.avi").write_bytes(b"x")
     (tmp_path / "old clip.srt").write_text("1\n", encoding="utf-8")
+    (tmp_path / "old clip.autodub.log").write_text("AUTODUB_EXIT=0\n", encoding="utf-8")
     path, options = _reopened(run_lua(tmp_path, "old clip.avi", "Start,Reopen video"))
     assert path == f"file://{tmp_path}/old clip_dubbed.avi"
     assert options == [f"sub-file={tmp_path}/old clip.srt", "start-time=42"]
 
 
-def test_reopen_after_dialog_restart_remembers_separate_files(tmp_path):
+@pytest.mark.parametrize("log", [None, "[autodub] dubbing line 1/9\n", "AUTODUB_EXIT=1\n",
+                                 "AUTODUB_EXIT=143\n"])
+def test_reopen_ignores_the_copy_unless_the_job_succeeded(tmp_path, log):
+    """Running, failed or stopped: the copy is partial or from an earlier run."""
+    (tmp_path / "old clip_dubbed.avi").write_bytes(b"x")
+    (tmp_path / "old clip.srt").write_text("1\n", encoding="utf-8")
+    if log is not None:
+        (tmp_path / "old clip.autodub.log").write_text(log, encoding="utf-8")
+    path, options = _reopened(run_lua(tmp_path, "old clip.avi", "Start,Reopen video"))
+    assert path == f"file://{tmp_path}/old clip.avi"
+    assert options == ["start-time=42"]
+
+
+@pytest.mark.parametrize("finished", [False, True])
+def test_reopen_after_dialog_restart_remembers_separate_files(tmp_path, finished):
     """A running job found on activate() keeps its mode (read from the pidfile)."""
     (tmp_path / "film_dubbed.avi").write_bytes(b"x")
     (tmp_path / "film.autodub.pid").write_text("12345 separate dub\n", encoding="utf-8")
+    (tmp_path / "film.autodub.log").write_text(
+        "AUTODUB_EXIT=0\n" if finished else "[autodub] dubbing line 1/9\n", encoding="utf-8")
     rows = run_lua(tmp_path, "film.avi", "Reopen video")
     assert ["D", "Auto-Dub"] in rows                  # status dialog, not settings
     path, options = _reopened(rows)
-    assert path == f"file://{tmp_path}/film_dubbed.avi"
+    # The copy is only played once the job has succeeded.
+    assert path == f"file://{tmp_path}/" + ("film_dubbed.avi" if finished else "film.avi")
     assert options == ["start-time=42"]               # dub only: no subtitles attached
 
 
@@ -187,7 +205,7 @@ local files = {}
 for f in string.gmatch(arg[3], "[^,]+") do files[f] = true end
 local j = { in_place = false, mode = arg[2], uri = "file:///v/a.mkv",
             dubbed = "/v/a_dubbed.mkv", dubbed_audio = "/v/a_dubbed.wav", srt = "/v/a.srt" }
-local path, options = reopen_target(j, function(p) return files[p] == true end)
+local path, options = reopen_target(j, function(p) return files[p] == true end, true)
 io.write(path, "\t", table.concat(options, "|"))
 """
 
@@ -216,9 +234,12 @@ def test_real_job_command_records_its_mode_and_cleans_up(tmp_path):
     subprocess.run(["/bin/sh", "-c", command], check=True)
     pidfile, log = tmp_path / "clip.autodub.pid", tmp_path / "clip.autodub.log"
     deadline = time.time() + 5
-    while not pidfile.exists() and time.time() < deadline:
+    # The shell creates the file before it writes to it: wait for the content.
+    fields: list[str] = []
+    while len(fields) < 3 and time.time() < deadline:
         time.sleep(0.02)
-    pid, where, mode = pidfile.read_text().split()
+        fields = pidfile.read_text().split() if pidfile.exists() else []
+    pid, where, mode = fields
     assert pid.isdigit() and (where, mode) == ("separate", "both")
     while "AUTODUB_EXIT=" not in (log.read_text() if log.exists() else "") \
             and time.time() < deadline:

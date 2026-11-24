@@ -40,7 +40,8 @@ def _resolve_outputs(input_path: str, output_base: str, has_video: bool) -> tupl
 
 
 def _replace_in_place(input_path: str, audio: str | None, srt: str | None, language: str,
-                      subtitle_codec: str, input_hash: str, workdir: str) -> None:
+                      subtitle_codec: str, input_hash: str, workdir: str,
+                      replace_und: bool = False) -> None:
     """Add the tracks to ``input_path`` atomically.
 
     The new file is written next to the original (same filesystem, so the final
@@ -54,7 +55,8 @@ def _replace_in_place(input_path: str, audio: str | None, srt: str | None, langu
     os.close(fd)
     try:
         expected = media.mux_tracks(input_path, tmp, audio=audio, srt=srt,
-                                    language=language, subtitle_codec=subtitle_codec)
+                                    language=language, subtitle_codec=subtitle_codec,
+                                    replace_und=replace_und)
         _verify_rewrite(input_path, tmp, expected, language, audio is not None, srt is not None)
         if _sha256(input_path) != input_hash:
             raise MediaError("input file changed during processing; not replacing it")
@@ -275,7 +277,7 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
         if config.subtitle_only:
             if config.in_place:
                 _replace_in_place(input_path, None, srt_path, language, subtitle_codec,
-                                  input_hash_before, workdir)
+                                  input_hash_before, workdir, replace_und=not do_translate)
             summary["mode"] = "subtitle-only"
             return summary
         assert tts is not None  # set whenever we are not in subtitle-only mode
@@ -317,7 +319,7 @@ def run(input_path: str, output_base: str | None, config: Config) -> dict:
 
         if config.in_place:
             _replace_in_place(input_path, dubbed, srt_path, language, subtitle_codec,
-                              input_hash_before, workdir)
+                              input_hash_before, workdir, replace_und=not do_translate)
             summary["dubbed_duration"] = round(dubbed_dur, 3)
             summary["source_duration"] = round(source_dur, 3)
             summary["mode"] = "full"
