@@ -207,12 +207,16 @@ def mix_segment(dub_wav: str, out_wav: str, *, dub_volume: float = 1.0,
     sum from clipping without changing the loudness of quiet passages.
     """
     require_binary("ffmpeg")
+    # Float, so a sum or gain above full scale reaches the limiter unclipped.
+    fmt = f"aformat=sample_fmts=flt:sample_rates={sample_rate}:channel_layouts=mono"
     if original_wav is None or original_volume <= 0:
-        graph = f"[0:a]volume={dub_volume:.4f},alimiter=limit=0.97:level=false[out]"
+        graph = f"[0:a]{fmt},volume={dub_volume:.4f},alimiter=limit=0.97:level=false[out]"
         inputs = ["-i", dub_wav]
     else:
-        graph = (f"[0:a]volume={dub_volume:.4f}[d];[1:a]volume={original_volume:.4f}[o];"
-                 f"[d][o]amix=inputs=2:duration=first:normalize=false,"
+        # Not amix: without its normalize=false (ffmpeg 4.4+) it rescales the gains.
+        graph = (f"[0:a]{fmt},volume={dub_volume:.4f}[d];"
+                 f"[1:a]{fmt},volume={original_volume:.4f},apad[o];"
+                 f"[d][o]amerge=inputs=2,pan=mono|c0=c0+c1,"
                  f"alimiter=limit=0.97:level=false[out]")
         inputs = ["-i", dub_wav, "-i", original_wav]
     _run(
