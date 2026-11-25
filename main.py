@@ -60,6 +60,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="dub from a text subtitle track already in the file instead of "
                              "transcribing the audio (much faster); falls back to transcription "
                              "when there is none")
+    parser.add_argument("--dub-volume", type=float, default=None,
+                        help="loudness of the dub, as a linear gain: 1.0 as synthesized, "
+                             "0.5 half, 2.0 double (max 3.0)")
+    parser.add_argument("--original-volume", type=float, default=None,
+                        help="keep the original speech under the dub at this gain, 0..1, "
+                             "so you can still hear who is talking (voice-over); "
+                             "0 = the dub replaces it")
     parser.add_argument("--keep-workdir", action="store_true",
                         help="keep intermediate files at <output-base>.work")
     parser.add_argument("--config", default=None, help="path to a config file (key = value or JSON)")
@@ -73,23 +80,25 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--output-base is required unless --in-place is used")
     if args.subtitle_only and args.dub_only:
         parser.error("--subtitle-only and --dub-only cannot be combined")
-    config = build_config(
-        config_path=args.config,
-        stt=args.stt,
-        translate=args.translate,
-        tts=args.tts,
-        voice=args.voice,
-        source_lang=args.source_lang,
-        target_lang=args.target_lang,
-        subtitle_only=args.subtitle_only,
-        keep_workdir=args.keep_workdir,
-        in_place=args.in_place,
-        dub_only=args.dub_only,
-        whisper_model=args.whisper_model,
-        sound_tags=False if args.no_sound_tags else None,
-        use_embedded_subs=args.use_embedded_subs,
-    )
     try:
+        config = build_config(
+            config_path=args.config,
+            stt=args.stt,
+            translate=args.translate,
+            tts=args.tts,
+            voice=args.voice,
+            source_lang=args.source_lang,
+            target_lang=args.target_lang,
+            subtitle_only=args.subtitle_only,
+            keep_workdir=args.keep_workdir,
+            in_place=args.in_place,
+            dub_only=args.dub_only,
+            whisper_model=args.whisper_model,
+            sound_tags=False if args.no_sound_tags else None,
+            use_embedded_subs=args.use_embedded_subs,
+            dub_volume=args.dub_volume,
+            original_volume=args.original_volume,
+        )
         summary = run(args.input, args.output_base, config)
     except AutoDubError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -105,6 +114,9 @@ def main(argv: list[str] | None = None) -> int:
     if summary.get("sound_tags"):
         print(f"[autodub] sound tags: {summary['sound_tags']}")
     print(f"[autodub] voice: {summary.get('voice') or '(provider default)'}")
+    if summary["mode"] == "full" and (summary["original_volume"] or summary["dub_volume"] != 1.0):
+        print(f"[autodub] mix: dub {summary['dub_volume']:g}x, "
+              f"original speech under it {summary['original_volume']:g}x")
     if summary["in_place"]:
         if summary["mode"] == "subtitle-only":
             added = "subtitle track"

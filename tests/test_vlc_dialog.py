@@ -140,9 +140,21 @@ def test_format_note_only_when_in_place_is_impossible(tmp_path):
 
 def test_start_runs_the_cli_with_dialog_defaults(tmp_path):
     _w, values, command = run_dialog(tmp_path, "my clip.mp4")
-    assert [v[0] for v in values] == ["Auto-detect", "English (en)", "Dub + subtitles"]
+    assert [v[0] for v in values] == ["Auto-detect", "English (en)", "Dub + subtitles",
+                                      "Off", "100%"]
     assert command.startswith("( '/usr/bin/python3' '/opt/autodub/main.py' ")
-    assert f"'{tmp_path}/my clip.mp4' '--in-place' '--target-lang' 'en' &" in command
+    assert f"'{tmp_path}/my clip.mp4' '--in-place' '--target-lang' 'en' " \
+           "'--dub-volume' '1' '--original-volume' '0' &" in command
+
+
+def test_config_preselects_volumes(tmp_path):
+    _w, values, command = run_dialog(tmp_path, "my clip.mkv",
+                                     "original_volume = 0.3, dub_volume = 1.25")
+    original, dub = values[3], values[4]
+    assert original[0] == "Medium (30%)" and sorted(original) == sorted(
+        ["Off", "Quiet (15%)", "Medium (30%)", "Loud (50%)"])    # moved, nothing lost
+    assert dub[0] == "125%"
+    assert "'--dub-volume' '1.25' '--original-volume' '0.3'" in command
 
 
 # --- Reopen video ----------------------------------------------------------

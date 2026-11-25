@@ -12,6 +12,8 @@
 --     return {
 --       python = "/usr/bin/python3",           -- interpreter
 --       script = "/opt/vlc-auto-dub/main.py",  -- absolute path to main.py
+--       original_volume = 0.3,  -- optional: preselect "original voices under the dub"
+--       dub_volume = 1.0,       -- optional: preselect the dub volume
 --     }
 --
 -- or set VLC_AUTODUB_PYTHON / VLC_AUTODUB_SCRIPT (and optionally
@@ -20,7 +22,7 @@
 function descriptor()
     return {
         title = "Auto-Dub (vlc-auto-dub)",
-        version = "3.1",
+        version = "3.2",
         author = "vlc-auto-dub",
         shortdesc = "Dub and/or subtitle the current video",
         capabilities = { "menu" }
@@ -41,6 +43,25 @@ local MODES = {
     { "both", "Dub + subtitles" },
     { "dub", "Dub only" },
     { "subs", "Subtitles only" },
+}
+
+-- How loud the original speech stays under the dub (0 = the dub replaces it),
+-- and the dub's own loudness. { gain, label }; ascending after the first,
+-- since VLC preselects that one. The first entry is the default
+-- unless config.lua sets original_volume / dub_volume.
+local ORIGINAL_LEVELS = {
+    { 0, "Off" },
+    { 0.15, "Quiet (15%)" },
+    { 0.3, "Medium (30%)" },
+    { 0.5, "Loud (50%)" },
+}
+
+local DUB_LEVELS = {
+    { 1.0, "100%" },
+    { 0.5, "50%" },
+    { 0.75, "75%" },
+    { 1.25, "125%" },
+    { 1.5, "150%" },
 }
 
 -- Formats --in-place can rewrite (must match autodub/media.py).
@@ -82,9 +103,16 @@ local function current_item()
     return path, uri
 end
 
+-- A gain as a CLI number. Always a "." decimal point: string.format follows
+-- the C locale, which can be "0,3" under some UI languages.
+local function gain_arg(gain)
+    return (string.format("%g", gain):gsub(",", "."))
+end
+
 -- Build the CLI argument list (everything after "<python> <script>").
 -- Mirrored by tests/test_vlc_invocation.py; keep the two in sync.
-function build_args(video, source, target, mode, in_place, sound_tags, use_embedded)
+function build_args(video, source, target, mode, in_place, sound_tags, use_embedded,
+                    dub_volume, original_volume)
     local args = { video }
     if in_place then
         table.insert(args, "--in-place")
@@ -111,7 +139,40 @@ function build_args(video, source, target, mode, in_place, sound_tags, use_embed
     if use_embedded then
         table.insert(args, "--use-embedded-subs")
     end
+    if mode ~= "subs" then
+        -- Always passed, even at their defaults, so the dialog's choice wins over
+        -- AUTODUB_DUB_VOLUME / AUTODUB_ORIGINAL_VOLUME in VLC's environment.
+        if dub_volume then
+            table.insert(args, "--dub-volume")
+            table.insert(args, gain_arg(dub_volume))
+        end
+        if original_volume then
+            table.insert(args, "--original-volume")
+            table.insert(args, gain_arg(original_volume))
+        end
+    end
     return args
+end
+
+-- ``levels`` with the entry for ``preferred`` moved to the front (VLC's
+-- dropdowns preselect the first value). A gain that matches no preset is
+-- offered first, labelled with its percentage. One the CLI would reject (outside
+-- 0..maximum) is ignored.
+function levels_with_default(levels, preferred, maximum)
+    local gain = tonumber(preferred)
+    if gain == nil or not (gain >= 0 and gain <= maximum) then
+        return levels
+    end
+    local out, found = {}, nil
+    for _, level in ipairs(levels) do
+        if math.abs(level[1] - gain) < 1e-6 then
+            found = level
+        else
+            table.insert(out, level)
+        end
+    end
+    table.insert(out, 1, found or { gain, string.format("%d%%", math.floor(gain * 100 + 0.5)) })
+    return out
 end
 
 local function read_file(path)
@@ -288,7 +349,7 @@ local function show_status_dialog(message)
 end
 
 local function start_job(video, uri, python, script, source, target, mode, in_place, sound_tags,
-                         use_embedded)
+                         use_embedded, dub_volume, original_volume)
     local j = job_for(video, uri, in_place, mode)
     if running_pid(j) then
         job = j
@@ -297,7 +358,7 @@ local function start_job(video, uri, python, script, source, target, mode, in_pl
     end
     local parts = { shquote(python), shquote(script) }
     for _, arg in ipairs(build_args(video, source, target, mode, in_place, sound_tags,
-                                           use_embedded)) do
+                                    use_embedded, dub_volume, original_volume)) do
         table.insert(parts, shquote(arg))
     end
     -- Run in the background so VLC's UI thread is not blocked. The PID is kept
@@ -316,7 +377,7 @@ local function start_job(video, uri, python, script, source, target, mode, in_pl
     show_status_dialog("Started. This can take a while; you can keep watching.")
 end
 
-local function show_settings_dialog(video, uri, python, script)
+local function show_settings_dialog(video, uri, python, script, cfg)
     close_dialog()
     dlg = vlc.dialog("Auto-Dub settings")
 
@@ -364,6 +425,18 @@ local function show_settings_dialog(video, uri, python, script)
         mode_dd:add_value(m[2], i)
     end
 
+    local original_dd = dropdown("Original voices:")
+    local originals = levels_with_default(ORIGINAL_LEVELS, cfg.original_volume, 1)
+    for i, level in ipairs(originals) do
+        original_dd:add_value(level[2], i)
+    end
+
+    local dub_dd = dropdown("Dub volume:")
+    local dubs = levels_with_default(DUB_LEVELS, cfg.dub_volume, 3)
+    for i, level in ipairs(dubs) do
+        dub_dd:add_value(level[2], i)
+    end
+
     local can_in_place = IN_PLACE_EXTENSIONS[extension_of(video)] == true
     local in_place_cb = dlg:add_check_box("Add tracks into this file", can_in_place,
         1, next_row(), 2, 1)
@@ -381,8 +454,10 @@ local function show_settings_dialog(video, uri, python, script)
         local target = targets[target_dd:get_value()] or "same"
         local mode = (MODES[mode_dd:get_value()] or MODES[1])[1]
         local in_place = can_in_place and in_place_cb:get_checked()
+        local original_volume = (originals[original_dd:get_value()] or originals[1])[1]
+        local dub_volume = (dubs[dub_dd:get_value()] or dubs[1])[1]
         start_job(video, uri, python, script, source, target, mode, in_place,
-            tags_cb:get_checked(), embedded_cb:get_checked())
+            tags_cb:get_checked(), embedded_cb:get_checked(), dub_volume, original_volume)
     end, 1, r, 1, 1)
     dlg:add_button("Cancel", close_dialog, 2, r, 1, 1)
     dlg:show()
@@ -414,7 +489,7 @@ function activate()
         show_status_dialog("A job is running for this video.")
         return
     end
-    show_settings_dialog(video, uri, python, script)
+    show_settings_dialog(video, uri, python, script, cfg)
 end
 
 function deactivate()
