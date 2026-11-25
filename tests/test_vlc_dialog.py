@@ -231,6 +231,10 @@ INSIDE = "[autodub] subtitles: embedded in the dubbed copy [tur]\n" + OK
     ("both", "/v/a_dubbed.mkv,/v/a.srt", INSIDE, ("file:///v/a_dubbed.mkv", "")),  # old .srt ignored
     # The copy fell back to video + dub, so its subtitles are in the .srt.
     ("both", "/v/a_dubbed.mkv,/v/a.srt", OK, ("file:///v/a_dubbed.mkv", "sub-file=/v/a.srt")),
+    # ... or in the file the log names, when <base>.srt was already there.
+    ("both", "/v/a_dubbed.mkv,/v/a.srt,/v/a_dubbed.srt",
+     "[autodub] subtitles: /v/a_dubbed.srt\n" + OK,
+     ("file:///v/a_dubbed.mkv", "sub-file=/v/a_dubbed.srt")),
     ("both", "/v/a_dubbed.avi,/v/a.srt", OK, ("file:///v/a_dubbed.avi", "sub-file=/v/a.srt")),
     ("subs", "/v/a_dubbed.mkv,/v/a.srt", OK, ("file:///v/a.mkv", "sub-file=/v/a.srt")),  # stale dub ignored
     ("dub", "/v/a_dubbed.mkv,/v/a.srt", OK, ("file:///v/a_dubbed.mkv", "")),             # stale srt ignored

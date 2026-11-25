@@ -252,8 +252,12 @@ function reopen_target(j, exists, log)
     local subs_inside = copy ~= nil
         and log:find("subtitles: embedded in the dubbed copy", 1, true) ~= nil
     local options = {}
-    if j.mode ~= "dub" and not subs_inside and exists(j.srt) then
-        table.insert(options, "sub-file=" .. j.srt)
+    if j.mode ~= "dub" and not subs_inside then
+        -- Printed by main.py; not always <base>.srt, which may be the user's own.
+        local srt = log:match("%[autodub%] subtitles: ([^\r\n]+%.srt)") or j.srt
+        if exists(srt) then
+            table.insert(options, "sub-file=" .. srt)
+        end
     end
     if copy then
         return to_uri(copy), options
