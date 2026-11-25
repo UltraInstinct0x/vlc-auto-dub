@@ -30,7 +30,7 @@ _TO_ISO1.update({
 @dataclass
 class EmbeddedTrack:
     index: int            # absolute ffprobe stream index (for -map 0:<index>)
-    language: str | None  # 2-letter code, or None when untagged/unknown
+    language: str | None  # 2-letter code (or the 3-letter tag if it has none); None when untagged
     codec: str
     title: str
 
@@ -104,7 +104,10 @@ _SOUND_RE = re.compile(r"\[[^\]]*\]|\([^)]*\)")       # [music], (sighs)
 _SUNG_RE = re.compile(r"[♪♫][^♪♫]*[♪♫]")               # ♪ lyrics ♪, maybe over two lines
 _HASH_SUNG_RE = re.compile(r"^#.*#$|^[#\s]+$")          # # lyrics #
 _DASH_RE = re.compile(r"^[-‐–—]\s*(?=\D)")              # "- Hi" (but not "-5 degrees")
-_LABEL_RE = re.compile(r"^([^\W\d_][\w .'’&#-]{0,30}):\s*")  # JOHN:, MAN 2:
+# JOHN:, DR. JONES:, MAN 2: -- up to three words of letters and an optional
+# trailing number, never a time ("AT 10:30") or a whole sentence.
+_LABEL_WORD = r"[^\W\d_](?:[^\W\d_]|[.'’&-])*"
+_LABEL_RE = re.compile(rf"^({_LABEL_WORD}(?: {_LABEL_WORD}){{0,2}}(?: \d{{1,2}})?):(?!\d)\s*")
 _TS_RE = re.compile(r"(\d+):(\d{2}):(\d{2})[,.](\d{3})")
 
 
@@ -117,6 +120,10 @@ def clean_text(text: str) -> str:
     text = _TAG_RE.sub("", text)
     text = _SOUND_RE.sub(" ", text)
     text = _SUNG_RE.sub(" ", text)
+    # A speaker label is told apart from speech by its case (JOHN: Hi there). In
+    # an all-caps cue it can't be, so nothing is stripped: saying a name aloud is
+    # better than dropping dialogue ("I HAVE ONE RULE: NEVER LIE").
+    labels_stand_out = any(c.islower() for c in text)
     lines = []
     for line in text.splitlines():
         line = line.strip()
@@ -124,7 +131,7 @@ def clean_text(text: str) -> str:
             continue
         line = _DASH_RE.sub("", line)
         label = _LABEL_RE.match(line)
-        if label and label.group(1).isupper():
+        if labels_stand_out and label and label.group(1).isupper():
             line = line[label.end():]
         line = _DASH_RE.sub("", line).strip()
         if line:

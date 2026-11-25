@@ -367,3 +367,37 @@ def test_unreadable_track_falls_back_and_keeps_user_language(tmp_path, capsys, m
     assert code == 0, err
     assert "could not be read (ffmpeg failed: bad packet)" in err
     assert parse_srt(str(tmp_path / "o.srt"))[0][2] == "[fr] fake segment"
+
+
+def test_clean_text_keeps_dialogue_in_all_caps_cues():
+    # Older caption rips are all caps; a colon there is speech, not a label.
+    assert es.clean_text("MEET ME AT 10:30") == "MEET ME AT 10:30"
+    assert es.clean_text("I HAVE ONE RULE: NEVER LIE") == "I HAVE ONE RULE: NEVER LIE"
+    assert es.clean_text("WARNING: DO NOT ENTER") == "WARNING: DO NOT ENTER"
+    assert es.clean_text("JOHN: HELLO.\n- MAN 2: HI!") == "JOHN: HELLO. MAN 2: HI!"
+    # Labels still go where their case sets them apart from the speech.
+    assert es.clean_text("DR. JONES: Sit down.") == "Sit down."
+    assert es.clean_text("JOHN: OK.\nMARY: Fine.") == "OK. Fine."
+    assert es.clean_text("MAN 2: At 10:30, then.") == "At 10:30, then."
+    # Not a name: too many words, or a time right after the colon.
+    assert es.clean_text("I HAVE ONE RULE: never lie") == "I HAVE ONE RULE: never lie"
+    assert es.clean_text("AT 10:30 sharp") == "AT 10:30 sharp"
+
+
+def test_failed_language_sampling_falls_back(tmp_path, capsys, monkeypatch):
+    from autodub.errors import MediaError
+
+    real_extract = media.extract_audio
+
+    def extract(*args, **kwargs):
+        if kwargs.get("start") is not None:  # only the detection samples fail
+            raise MediaError("ffmpeg failed: cannot seek")
+        return real_extract(*args, **kwargs)
+    monkeypatch.setattr(media, "extract_audio", extract)
+    video = _with_subs(tmp_path, "film.mkv", "srt", "eng")
+    code = cli.main([video, "--output-base", str(tmp_path / "o"), "--subtitle-only",
+                     "--use-embedded-subs", *FAKES])
+    err = capsys.readouterr().err
+    assert code == 0, err
+    assert "could not tell which subtitle track" in err
+    assert os.path.exists(tmp_path / "o.srt")

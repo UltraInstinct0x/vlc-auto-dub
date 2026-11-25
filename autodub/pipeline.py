@@ -91,25 +91,27 @@ def _verify_rewrite(original: str, rewritten: str, expected: dict, language: str
 def _spoken_language(stt, input_path: str, audio_index: int | None) -> str | None:
     """Detect the spoken language from three short samples, or ``None``.
 
-    Samples from inside the film: the opening is often music or silence.
+    Samples from inside the film: the opening is often music or silence. Any
+    failure, in the sampling as much as in the detection, means ``None``, so the
+    caller transcribes the audio as usual.
     """
     detect = getattr(stt, "detect_language", None)
     if detect is None:
         return None
     progress("detecting the spoken language")
-    total = media.duration(input_path)
-    with tempfile.TemporaryDirectory(prefix="autodub-") as tmp:
-        samples = []
-        for i, part in enumerate((0.25, 0.5, 0.75) if total > 120 else (0.0,)):
-            path = os.path.join(tmp, f"sample_{i}.wav")
-            media.extract_audio(input_path, path, audio_index=audio_index,
-                                start=total * part, length=30.0)
-            samples.append(path)
-        try:
+    try:
+        total = media.duration(input_path)
+        with tempfile.TemporaryDirectory(prefix="autodub-") as tmp:
+            samples = []
+            for i, part in enumerate((0.25, 0.5, 0.75) if total > 120 else (0.0,)):
+                path = os.path.join(tmp, f"sample_{i}.wav")
+                media.extract_audio(input_path, path, audio_index=audio_index,
+                                    start=total * part, length=30.0)
+                samples.append(path)
             detected = detect(samples)
-        except AutoDubError as exc:
-            progress(str(exc))
-            return None
+    except AutoDubError as exc:
+        progress(str(exc))
+        return None
     return primary_subtag(detected) if detected else None
 
 
