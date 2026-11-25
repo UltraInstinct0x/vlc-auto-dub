@@ -19,6 +19,7 @@ from .base import Segment
 DEFAULT_MODEL = "large-v3"
 # Telling which language is spoken needs far less than transcribing it.
 DETECT_MODEL = "base"
+DETECT_MIN_PROBABILITY = 0.5   # below this the language is treated as unknown
 
 # Cue shaping (readable subtitles; standard broadcast-ish limits).
 PAUSE_SPLIT = 0.7      # a silence this long between words starts a new cue
@@ -173,7 +174,10 @@ class WhisperSTT:
         for probs in probabilities:
             for code, p in probs.items():
                 totals[code] = totals.get(code, 0.0) + float(p)
-        return max(totals, key=totals.get) if totals else None
+        if not totals:
+            return None
+        best = max(totals, key=totals.get)
+        return best if totals[best] / len(probabilities) >= DETECT_MIN_PROBABILITY else None
 
     def _detect_mlx(self, clips) -> list[dict]:
         import mlx.core as mx

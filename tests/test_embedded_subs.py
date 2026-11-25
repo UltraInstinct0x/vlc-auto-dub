@@ -201,6 +201,8 @@ def test_clean_text_more_cases():
     assert es.clean_text("Listen: it is 12:30, -5 degrees") == "Listen: it is 12:30, -5 degrees"
     assert es.clean_text("-5 degrees") == "-5 degrees"
     assert es.clean_text("♪ la la\nla la ♪\nBye") == "Bye"
+    assert es.clean_text("♪ Line one\n♪ Line two") == ""       # closed in a later cue
+    assert es.clean_text("Hi ♪ la ♪ bye") == "Hi bye"
     assert es.clean_text("♪ la la") == "" and es.clean_text("# la la #") == ""
     assert es.clean_text("  spaced   out \n  text ") == "spaced out text"
 
@@ -401,3 +403,14 @@ def test_failed_language_sampling_falls_back(tmp_path, capsys, monkeypatch):
     assert code == 0, err
     assert "could not tell which subtitle track" in err
     assert os.path.exists(tmp_path / "o.srt")
+
+
+@pytest.mark.parametrize("probs,expected", [
+    ([{"en": 0.9, "es": 0.1}, {"en": 0.8, "es": 0.2}], "en"),
+    ([{"en": 0.4, "es": 0.3}, {"en": 0.3, "es": 0.35}], None),     # unsure: transcribe
+])
+def test_language_detection_needs_confidence(monkeypatch, probs, expected):
+    from autodub.providers.stt_whisper import WhisperSTT
+    monkeypatch.setattr(media, "read_samples", lambda path: path)
+    monkeypatch.setattr(WhisperSTT, "_detect_mlx", lambda self, clips: probs)
+    assert WhisperSTT(backend="mlx").detect_language(["a", "b"]) == expected
