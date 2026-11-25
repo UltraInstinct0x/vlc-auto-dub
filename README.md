@@ -74,6 +74,9 @@ python main.py movie.mkv --in-place --target-lang tr
 # Dub track only, no subtitles
 python main.py movie.mp4 --in-place --source-lang en --target-lang de --dub-only
 
+# Skip transcription: dub from the file's own subtitle track (much faster)
+python main.py movie.mkv --in-place --target-lang tr --use-embedded-subs
+
 # Choose providers / voice explicitly
 python main.py v.mp4 --output-base v --stt whisper --translate argos \
     --tts piper --voice en_US-lessac-medium
@@ -95,6 +98,7 @@ python main.py v.mp4 --output-base v --stt whisper --translate argos \
 | `--whisper-model` | faster-whisper model (`large-v3`, `large-v3-turbo`, `medium`, ...) | `large-v3` |
 | `--no-sound-tags` | no `[laughter]`/`[music]`/`[train]`... tags in subtitles | tags on |
 | `--subtitle-only` | subtitles only, no dub | off |
+| `--use-embedded-subs` | dub from a text subtitle track in the file instead of transcribing (see below) | off |
 | `--dub-only` | dub only, no subtitles | off |
 | `--keep-workdir` | keep intermediates at `BASE.work` | off |
 | `--config FILE` | config file (`key = value` or JSON) | none |
@@ -121,6 +125,30 @@ environment variables `AUTODUB_STT`, `AUTODUB_TRANSLATE`, `AUTODUB_TTS`,
   verified (stream counts, labelled tracks, duration), and only then renamed
   over the original in one atomic step. Any failure before that leaves the
   original byte-for-byte untouched and removes the temp file.
+
+### `--use-embedded-subs`
+
+Transcription is the slowest stage. When the file already carries a **text**
+subtitle track (SubRip, ASS/SSA, mov_text, WebVTT), its cues give the lines and
+their timing, so the dub is built from them and STT is skipped entirely
+(the sample video: ~12 s instead of ~2 min).
+
+- **Track choice**: a track already in `--target-lang` (no translation needed),
+  else one in the spoken language: `--source-lang`, or the language detected from
+  a few short samples (Whisper `base`, one-time ~145 MB download). An untagged
+  track is used only when `--source-lang` is set; a track in any other language
+  never is. Full tracks beat SDH/hearing-impaired ones, and the default track
+  beats the rest. **Forced** tracks and AutoDub tracks from an earlier
+  `--in-place` run are never used. Bitmap tracks (PGS, VobSub, DVB) hold
+  pictures, not text, and are ignored.
+- **Language**: translation runs from the track's language tag, and the TTS
+  voice follows it.
+- **Cleaning**: styling (`<i>`, `{\an8}`), sounds (`[door slams]`, `(laughs)`),
+  sung lines (`♪ ... ♪`), speaker labels (`JOHN:`) and dialogue dashes are
+  removed so they are not spoken; overlapping cues are merged or trimmed into a
+  non-overlapping timeline.
+- **Fallback**: no suitable track, a track that cannot be read, or one with no
+  speakable text → the audio is transcribed as usual and a warning says why.
 
 ### Recognition, timing and sound tags
 
@@ -200,6 +228,10 @@ are sent.
 - **Spoken language**: Auto-detect or a fixed language.
 - **Translate to**: a target language, or no translation.
 - **Produce**: Dub + subtitles, Dub only, or Subtitles only.
+- **Use the video's subtitles (faster)** (off by default): runs
+  `--use-embedded-subs`, skipping transcription when the file has a text subtitle
+  track in the spoken or target language. Subtitles are often condensed and
+  timed for reading, so the dub may follow the speech less closely.
 - **Add tracks into this file** (on by default for MP4/M4V/MOV/MKV): runs
   `--in-place`. Untick it to write `<base>_dubbed<ext>` / `<base>.srt` instead.
 

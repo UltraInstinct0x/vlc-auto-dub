@@ -104,7 +104,7 @@ def probe_streams(path: str) -> list[dict]:
         [
             "ffprobe", "-v", "error", "-show_entries",
             "stream=index,codec_type,codec_name:stream_tags=language,title,handler_name"
-            ":stream_disposition=default",
+            ":stream_disposition=default,forced,hearing_impaired",
             "-of", "json", path,
         ]
     ).stdout
@@ -115,16 +115,20 @@ def probe_streams(path: str) -> list[dict]:
 
 
 def extract_audio(video: str, out_wav: str, sample_rate: int = SAMPLE_RATE,
-                  audio_index: int | None = None) -> None:
+                  audio_index: int | None = None, start: float | None = None,
+                  length: float | None = None) -> None:
     """Extract a mono PCM WAV track from ``video``.
 
     ``audio_index`` selects the n-th audio stream; by default ffmpeg picks one.
+    ``start``/``length`` (seconds) extract only that part.
     """
     require_binary("ffmpeg")
     select = ["-map", f"0:a:{audio_index}"] if audio_index is not None else []
+    seek = ["-ss", f"{start:.3f}"] if start else []
+    limit = ["-t", f"{length:.3f}"] if length is not None else []
     _run(
         [
-            "ffmpeg", "-y", "-v", "error", "-i", video, *select,
+            "ffmpeg", "-y", "-v", "error", *seek, "-i", video, *select, *limit,
             "-vn", "-ac", "1", "-ar", str(sample_rate),
             "-acodec", "pcm_s16le", out_wav,
         ]

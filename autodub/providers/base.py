@@ -13,6 +13,8 @@ class Segment:
 
 
 class STT(Protocol):
+    # Optional: detect_language(sample_paths) -> code | None, a quick check that
+    # doesn't transcribe. Without it, --use-embedded-subs needs --source-lang.
     def transcribe(self, audio_path: str, language: str | None) -> list[Segment]:
         ...
 
