@@ -30,3 +30,25 @@ def assert_monotonic_nonoverlapping(cues: list[tuple[float, float, str]]) -> Non
         assert end > start, f"cue {i} has non-positive duration"
         assert start >= prev_end - 1e-6, f"cue {i} overlaps the previous cue"
         prev_end = end
+
+
+def embedded_cues(video: str, title: str = "AutoDub") -> list[tuple[float, float, str]]:
+    """Cues of the subtitle track named ``title...`` inside ``video``."""
+    import json
+    import os
+    import subprocess
+    import tempfile
+
+    streams = json.loads(subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries",
+         "stream=index,codec_type:stream_tags=title,handler_name", "-of", "json", video],
+        check=True, capture_output=True, text=True).stdout)["streams"]
+    index = next((s["index"] for s in streams if s["codec_type"] == "subtitle"
+                  and any(str(s.get("tags", {}).get(k, "")).startswith(title)
+                          for k in ("title", "handler_name"))), None)
+    assert index is not None, f"no {title!r} subtitle track in {video}: {streams}"
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "track.srt")
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", video, "-map", f"0:{index}",
+                        "-c:s", "srt", out], check=True)
+        return parse_srt(out)

@@ -22,7 +22,7 @@
 function descriptor()
     return {
         title = "Auto-Dub (vlc-auto-dub)",
-        version = "3.2",
+        version = "3.3",
         author = "vlc-auto-dub",
         shortdesc = "Dub and/or subtitle the current video",
         capabilities = { "menu" }
@@ -119,6 +119,11 @@ function build_args(video, source, target, mode, in_place, sound_tags, use_embed
     else
         table.insert(args, "--output-base")
         table.insert(args, strip_extension(video))
+        if mode ~= "subs" then
+            -- The dubbed copy carries the subtitles; no .srt beside it (the CLI
+            -- still writes one when the copy's container cannot hold them).
+            table.insert(args, "--no-srt")
+        end
     end
     if source ~= "auto" then
         table.insert(args, "--source-lang")
@@ -221,36 +226,37 @@ local function to_uri(path)
     return "file://" .. path
 end
 
--- Exit code recorded in the job's log, or nil while it is running. Each run
--- truncates the log, so this never reports an earlier run's result.
-local function exit_code(j)
-    return (read_file(j.log) or ""):match("AUTODUB_EXIT=(%d+)")
-end
-
 -- What "Reopen video" should play: the MRL and extra item options.
--- In place, the original file now holds the new tracks. Otherwise the dub is
--- a separate copy beside it, and its subtitles have a different base name, so
--- VLC would not pick them up by itself.
+-- In place, the original file now holds the new tracks. Otherwise the dub is a
+-- separate copy beside it. The log says whether the copy has the subtitles
+-- inside; if not, they are in an .srt whose base name differs from the copy's,
+-- so VLC would not pick it up by itself. Any other .srt is a leftover.
 -- Until the job has succeeded, whatever is there may be half-written or left
 -- over from an earlier run, so the original is reloaded.
-function reopen_target(j, exists, succeeded)
+function reopen_target(j, exists, log)
     exists = exists or file_exists
-    if succeeded == nil then
-        succeeded = exit_code(j) == "0"
-    end
-    if j.in_place or not succeeded then
+    log = log or read_file(j.log) or ""
+    if j.in_place or log:match("AUTODUB_EXIT=(%d+)") ~= "0" then
         return j.uri, {}
     end
-    local options = {}
-    if j.mode ~= "dub" and exists(j.srt) then
-        table.insert(options, "sub-file=" .. j.srt)
-    end
+    local copy = nil
     if j.mode ~= "subs" then
         for _, candidate in ipairs({ j.dubbed, j.dubbed_audio }) do
             if exists(candidate) then
-                return to_uri(candidate), options
+                copy = candidate
+                break
             end
         end
+    end
+    -- Printed by main.py.
+    local subs_inside = copy ~= nil
+        and log:find("subtitles: embedded in the dubbed copy", 1, true) ~= nil
+    local options = {}
+    if j.mode ~= "dub" and not subs_inside and exists(j.srt) then
+        table.insert(options, "sub-file=" .. j.srt)
+    end
+    if copy then
+        return to_uri(copy), options
     end
     return j.uri, options  -- subtitles only: the original plus the new .srt
 end

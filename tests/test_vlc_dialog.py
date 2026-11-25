@@ -214,22 +214,32 @@ vlc = { strings = { make_uri = function(p) return "file://" .. p end } }
 dofile(arg[1])
 local files = {}
 for f in string.gmatch(arg[3], "[^,]+") do files[f] = true end
-local j = { in_place = false, mode = arg[2], uri = "file:///v/a.mkv",
-            dubbed = "/v/a_dubbed.mkv", dubbed_audio = "/v/a_dubbed.wav", srt = "/v/a.srt" }
-local path, options = reopen_target(j, function(p) return files[p] == true end, true)
+local ext = (arg[3]:match("a_dubbed(%.%a+)") or ".mkv")
+if ext == ".wav" then ext = ".mkv" end
+local j = { in_place = false, mode = arg[2], uri = "file:///v/a" .. ext,
+            dubbed = "/v/a_dubbed" .. ext, dubbed_audio = "/v/a_dubbed.wav", srt = "/v/a.srt" }
+local path, options = reopen_target(j, function(p) return files[p] == true end, arg[4])
 io.write(path, "\t", table.concat(options, "|"))
 """
 
 
-@pytest.mark.parametrize("mode,files,expected", [
-    ("both", "/v/a_dubbed.mkv,/v/a.srt", ("file:///v/a_dubbed.mkv", "sub-file=/v/a.srt")),
-    ("subs", "/v/a_dubbed.mkv,/v/a.srt", ("file:///v/a.mkv", "sub-file=/v/a.srt")),  # stale dub ignored
-    ("dub", "/v/a_dubbed.mkv,/v/a.srt", ("file:///v/a_dubbed.mkv", "")),             # stale srt ignored
-    ("both", "/v/a_dubbed.wav,/v/a.srt", ("file:///v/a_dubbed.wav", "sub-file=/v/a.srt")),  # audio-only
-    ("both", "", ("file:///v/a.mkv", "")),                                           # nothing written
+OK = "AUTODUB_EXIT=0\n"
+INSIDE = "[autodub] subtitles: embedded in the dubbed copy [tur]\n" + OK
+
+
+@pytest.mark.parametrize("mode,files,log,expected", [
+    ("both", "/v/a_dubbed.mkv,/v/a.srt", INSIDE, ("file:///v/a_dubbed.mkv", "")),  # old .srt ignored
+    # The copy fell back to video + dub, so its subtitles are in the .srt.
+    ("both", "/v/a_dubbed.mkv,/v/a.srt", OK, ("file:///v/a_dubbed.mkv", "sub-file=/v/a.srt")),
+    ("both", "/v/a_dubbed.avi,/v/a.srt", OK, ("file:///v/a_dubbed.avi", "sub-file=/v/a.srt")),
+    ("subs", "/v/a_dubbed.mkv,/v/a.srt", OK, ("file:///v/a.mkv", "sub-file=/v/a.srt")),  # stale dub ignored
+    ("dub", "/v/a_dubbed.mkv,/v/a.srt", OK, ("file:///v/a_dubbed.mkv", "")),             # stale srt ignored
+    ("both", "/v/a_dubbed.wav,/v/a.srt", OK, ("file:///v/a_dubbed.wav", "sub-file=/v/a.srt")),  # audio-only
+    ("both", "", OK, ("file:///v/a.mkv", "")),                                           # nothing written
+    ("both", "/v/a_dubbed.mkv,/v/a.srt", "AUTODUB_EXIT=1", ("file:///v/a.mkv", "")),     # failed
 ])
-def test_reopen_target(mode, files, expected):
-    out = subprocess.run([LUA, "-", os.path.join(ROOT, "transcribe.vlc.lua"), mode, files or ","],
+def test_reopen_target(mode, files, log, expected):
+    out = subprocess.run([LUA, "-", os.path.join(ROOT, "transcribe.vlc.lua"), mode, files or ",", log],
                          input=REOPEN, check=True, capture_output=True, text=True).stdout
     assert tuple(out.split("\t")) == expected
 

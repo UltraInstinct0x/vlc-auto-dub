@@ -29,7 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
                                       "(never modified unless --in-place)")
     parser.add_argument(
         "--output-base", default=None,
-        help="output path base; writes <base>_dubbed<ext> and <base>.srt "
+        help="output path base; writes <base>_dubbed<ext> (subtitles inside) and "
+             "<base>.srt "
              "(required unless --in-place)",
     )
     parser.add_argument(
@@ -67,6 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="keep the original speech under the dub at this gain, 0..1, "
                              "so you can still hear who is talking (voice-over); "
                              "0 = the dub replaces it")
+    parser.add_argument("--no-srt", action="store_true",
+                        help="don't write <base>.srt when the subtitles are inside the dubbed "
+                             "copy (it is still written when they cannot go inside)")
     parser.add_argument("--keep-workdir", action="store_true",
                         help="keep intermediate files at <output-base>.work")
     parser.add_argument("--config", default=None, help="path to a config file (key = value or JSON)")
@@ -98,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
             use_embedded_subs=args.use_embedded_subs,
             dub_volume=args.dub_volume,
             original_volume=args.original_volume,
+            write_srt=False if args.no_srt else None,
         )
         summary = run(args.input, args.output_base, config)
     except AutoDubError as exc:
@@ -127,6 +132,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[autodub] in-place: added {added} "
               f"[{summary['track_language']}] to {summary['output_media']}")
     else:
+        if summary.get("subtitles_embedded"):
+            print(f"[autodub] subtitles: embedded in the dubbed copy "
+                  f"[{summary['track_language']}]")
         if summary["output_srt"]:
             print(f"[autodub] subtitles: {summary['output_srt']}")
         if summary["mode"] == "full":

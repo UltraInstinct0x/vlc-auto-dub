@@ -42,6 +42,8 @@ class Config:
     use_embedded_subs: bool = False
     dub_volume: float = DEFAULT_DUB_VOLUME
     original_volume: float = DEFAULT_ORIGINAL_VOLUME
+    # Also write <base>.srt when the subtitles are inside the dubbed copy.
+    write_srt: bool = True
     duration_tolerance: float = DEFAULT_DURATION_TOLERANCE
 
 
@@ -90,6 +92,7 @@ def build_config(
     use_embedded_subs: bool = False,
     dub_volume: float | None = None,
     original_volume: float | None = None,
+    write_srt: bool | None = None,
 ) -> Config:
     data: dict = {}
     if config_path:
@@ -122,4 +125,7 @@ def build_config(
         original_volume=_volume(pick(original_volume, "original_volume",
                                      "AUTODUB_ORIGINAL_VOLUME", DEFAULT_ORIGINAL_VOLUME),
                                 "original volume", 1.0),
+        # Empty means unset, i.e. the default (on).
+        write_srt=str(pick(write_srt, "write_srt", "AUTODUB_WRITE_SRT", True)).strip().lower()
+        not in ("0", "false", "no", "off"),
     )

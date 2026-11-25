@@ -42,7 +42,7 @@ def test_path_with_spaces_and_non_ascii(tone_video, tmp_path):
     summary = run(video, base, _fake_cfg(source_lang="en", target_lang="de"))
     assert os.path.exists(summary["output_media"])
     assert summary["output_media"].endswith("_dubbed.mp4")
-    assert os.path.exists(summary["output_srt"])
+    assert _util.embedded_cues(summary["output_media"])  # subtitles inside the copy
 
 
 def test_mkv_container(tmp_path):
@@ -70,5 +70,5 @@ def test_non_ascii_source_text(tone_video, tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline, "make_stt", lambda name, model=None: FakeSTT(text=unicode_text))
     base = str(tmp_path / "out")
     summary = run(tone_video, base, _fake_cfg(source_lang="en"))
-    content = open(summary["output_srt"], encoding="utf-8").read()
-    assert unicode_text in content
+    texts = [text for _s, _e, text in _util.embedded_cues(summary["output_media"])]
+    assert unicode_text in texts
