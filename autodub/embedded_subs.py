@@ -101,7 +101,8 @@ def find_track(streams: list[dict], source_code: str | None, target_code: str | 
 
 _TAG_RE = re.compile(r"<[^>]*>|\{[^}]*\}")             # HTML-ish and ASS override tags
 _SOUND_RE = re.compile(r"\[[^\]]*\]|\([^)]*\)")       # [music], (sighs)
-_SUNG_RE = re.compile(r"[♪♫][^♪♫]*[♪♫]")               # ♪ lyrics ♪, maybe over two lines
+_SUNG_INLINE_RE = re.compile(r"[♪♫][^♪♫\n]*[♪♫]")       # ♪ lyrics ♪
+_SUNG_LINES_RE = re.compile(r"^\s*[♪♫][^♪♫]*[♪♫]\s*$", re.M)  # ... over several lines
 _HASH_SUNG_RE = re.compile(r"^#.*#$|^[#\s]+$")          # # lyrics #
 _DASH_RE = re.compile(r"^[-‐–—]\s*(?=\D)")              # "- Hi" (but not "-5 degrees")
 # JOHN:, DR. JONES:, MAN 2: -- up to three words of letters and an optional
@@ -119,7 +120,8 @@ def clean_text(text: str) -> str:
     text = text.replace("\\N", "\n").replace("\\n", "\n").replace("\\h", " ")
     text = _TAG_RE.sub("", text)
     text = _SOUND_RE.sub(" ", text)
-    text = _SUNG_RE.sub(" ", text)
+    text = _SUNG_INLINE_RE.sub(" ", text)
+    text = _SUNG_LINES_RE.sub(" ", text)
     # A speaker label is told apart from speech by its case (JOHN: Hi there). In
     # an all-caps cue it can't be, so nothing is stripped: saying a name aloud is
     # better than dropping dialogue ("I HAVE ONE RULE: NEVER LIE").

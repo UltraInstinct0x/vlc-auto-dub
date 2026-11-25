@@ -178,6 +178,9 @@ def test_phone_data_tracks_do_not_lose_the_other_tracks(tmp_path, capsys, name):
     assert "embedded in the dubbed copy" in out.out
     kinds = [s["codec_type"] for s in media.probe_streams(str(tmp_path / f"o_dubbed{name[-4:]}"))]
     assert kinds.count("audio") == 2 and kinds.count("subtitle") == 1
+    is_mp4 = name.endswith(".mp4")           # MOV can carry the data track
+    assert ("leaves out the original's data tracks" in out.err) == is_mp4
+    assert ("data" in kinds) == (not is_mp4)
 
 
 def test_cover_art_is_kept(tmp_path, capsys):
@@ -204,9 +207,13 @@ def test_other_failures_are_errors_and_leave_no_copy(tmp_path, monkeypatch, caps
     before = set(tmp_path.iterdir())
     (tmp_path / "o_dubbed.mp4").write_bytes(b"earlier run")
     assert cli.main([video, "--output-base", str(tmp_path / "o"), "--no-srt", *FAKES]) == 1
-    assert "something else went wrong" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "something else went wrong; the dubbed audio is in" in err
+    assert media.duration(str(tmp_path / "o_dubbed.wav")) == pytest.approx(
+        media.duration(video), abs=0.5)
     assert (tmp_path / "o_dubbed.mp4").read_bytes() == b"earlier run"
-    assert set(tmp_path.iterdir()) - before == {tmp_path / "o_dubbed.mp4"}   # no temp files
+    assert set(tmp_path.iterdir()) - before == {
+        tmp_path / "o_dubbed.mp4", tmp_path / "o_dubbed.wav"}   # no temp files
 
 
 def test_dubbing_a_dubbed_copy_transcribes_the_original(tmp_path, monkeypatch):
@@ -259,3 +266,16 @@ def test_write_srt_from_the_environment(monkeypatch, value, expected):
     from autodub.config import build_config
     monkeypatch.setenv("AUTODUB_WRITE_SRT", value)
     assert build_config().write_srt is expected
+
+
+def test_fallback_does_not_overwrite_an_existing_srt(tmp_path, monkeypatch, capsys):
+    def refuse(*_a, **_k):
+        raise ContainerError("not currently supported in container")
+    monkeypatch.setattr(media, "mux_tracks", refuse)
+    video = _rich_video(tmp_path)
+    (tmp_path / "o.srt").write_text("mine", encoding="utf-8")
+    assert cli.main([video, "--output-base", str(tmp_path / "o"), "--no-srt", *FAKES]) == 0
+    out = capsys.readouterr()
+    assert (tmp_path / "o.srt").read_text(encoding="utf-8") == "mine"
+    assert parse_srt(str(tmp_path / "o_dubbed.srt"))[0][2] == "fake segment"
+    assert f"subtitles: {tmp_path / 'o_dubbed.srt'}" in out.out     # Reopen reads this

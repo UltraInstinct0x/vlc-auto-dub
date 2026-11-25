@@ -59,7 +59,8 @@ input (`<BASE>_dubbed.wav`), containers other than MP4/M4V/MOV/MKV, or a
 container that cannot carry some original track (that copy falls back to the
 video plus the dub, with a warning). Data tracks the container cannot carry
 (timecode, phone sensor data) are left out, with a warning. An existing
-`<BASE>.srt` is never deleted.
+`<BASE>.srt` is never deleted, and with `--no-srt` the fallback writes
+`<BASE>_dubbed.srt` rather than overwrite it.
 
 ```bash
 python main.py INPUT --in-place [options]
@@ -151,7 +152,8 @@ their timing, so the dub is built from them and STT is skipped entirely
 
 - **Track choice**: a track already in `--target-lang` (no translation needed),
   else one in the spoken language: `--source-lang`, or the language detected from
-  a few short samples (Whisper `base`, one-time ~145 MB download). An untagged
+  a few short samples (always Whisper `base`, whatever `--whisper-model` is;
+  one-time ~145 MB download; an unsure result means transcribing). An untagged
   track is used only when `--source-lang` is set; a track in any other language
   never is. Full tracks beat SDH/hearing-impaired ones, and the default track
   beats the rest. **Forced** tracks and AutoDub tracks from an earlier

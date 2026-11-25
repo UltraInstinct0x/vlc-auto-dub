@@ -163,6 +163,9 @@ def _write_dubbed_copy(input_path: str, dubbed: str, output_media: str, language
             where = ""
             if srt is not None and fallback_srt:
                 if os.path.abspath(srt) != os.path.abspath(fallback_srt):  # --no-srt
+                    if os.path.exists(fallback_srt):
+                        # Maybe the user's own: never overwrite it.
+                        fallback_srt = os.path.splitext(output_media)[0] + ".srt"
                     shutil.copyfile(srt, fallback_srt)
                 summary["output_srt"] = os.path.abspath(fallback_srt)
                 where = f"; the subtitles are in {os.path.basename(fallback_srt)}"
@@ -170,6 +173,13 @@ def _write_dubbed_copy(input_path: str, dubbed: str, output_media: str, language
                 f"could not keep the original tracks in {name} "
                 f"({exc}); it has the video and the dub only{where}")
             media.mux(input_path, dubbed, tmp)
+        except MediaError as exc:
+            # The dub is the slow part: don't lose it with the work folder.
+            kept = os.path.splitext(output_media)[0] + ".wav"
+            if os.path.exists(kept):
+                raise
+            shutil.copyfile(dubbed, kept)
+            raise MediaError(f"{exc}; the dubbed audio is in {kept}") from exc
         shutil.copymode(input_path, tmp)
         os.replace(tmp, output_media)
     finally:
